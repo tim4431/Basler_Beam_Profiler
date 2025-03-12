@@ -1,5 +1,5 @@
 import cv2, numpy as np
-from .fit_gaussian import *
+from fit_gaussian import *
 
 
 def blob_keypoint_detector(im):
