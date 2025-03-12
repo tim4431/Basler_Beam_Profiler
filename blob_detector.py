@@ -2,20 +2,15 @@ import cv2, numpy as np
 from fit_gaussian import *
 
 
-def blob_keypoint_detector(im):
-    """
-    Blob detection using OpenCV's SimpleBlobDetector.
-    OpenCV's SimpleBlobDetector only supports CV_8U, so we create a normalized temporary version for detection.
-    """
+def blob_keypoint_detector(im, minThreshold=10, maxThreshold=200):
     if im.dtype == np.uint16:
         im_norm = cv2.normalize(im, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        # print("Converted to uint8")
     else:
         im_norm = im
 
     params = cv2.SimpleBlobDetector_Params()
-    params.minThreshold = 10
-    params.maxThreshold = 200
+    params.minThreshold = minThreshold
+    params.maxThreshold = maxThreshold
     params.filterByArea = True
     params.minArea = 10
     params.maxArea = 100000000
@@ -29,7 +24,6 @@ def blob_keypoint_detector(im):
     params.blobColor = 255
 
     detector = cv2.SimpleBlobDetector_create(params)
-    #
     keypoints = detector.detect(im_norm)
     return keypoints
 
@@ -122,9 +116,9 @@ def fit_gaussian_within_roi(img, spot, plot=False, ax=None):
     return spot
 
 
-def blob_detector(im, plot=False):
+def blob_detector(im, plot=False, minThreshold=10, maxThreshold=200):
     im_blur = blur_threshold_morph(im)
-    keypoints = blob_keypoint_detector(im_blur)
+    keypoints = blob_keypoint_detector(im_blur, minThreshold, maxThreshold)
     spots = keypts_to_spots(keypoints)
     spots = [fit_gaussian_within_roi(im, spot, plot=plot) for spot in spots]
     return spots

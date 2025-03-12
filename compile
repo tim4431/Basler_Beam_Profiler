@@ -1,0 +1,1 @@
+pyinstaller --onefile beam_profiler.py

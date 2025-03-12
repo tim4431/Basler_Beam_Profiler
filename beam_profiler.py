@@ -38,6 +38,10 @@ class BeamProfilerGUI(QMainWindow):
         self.roi_h = 2000
         self.camera.CROI((self.roi_x, self.roi_y, self.roi_w, self.roi_h))
 
+        self.fixed_blobs = []  # list to hold fixed blob dictionaries
+        self.current_spots = []  # updated in update_frame() with current detected spots
+        self.video_label.mousePressEvent = self.handle_mouse_press
+
         # Create the main widget and layouts.
         self.main_widget = QWidget(self)
         self.setCentralWidget(self.main_widget)
@@ -75,6 +79,20 @@ class BeamProfilerGUI(QMainWindow):
         self.gain_spin.setRange(self._least_gain, self._max_gain)
         self.gain_spin.setValue(0)  # default value
         control_layout.addWidget(self.gain_spin)
+
+        # Blob detection threshold controls.
+        # In BeamProfilerGUI.__init__ after other controls:
+        self.blob_min_threshold_spin = QSpinBox()
+        self.blob_min_threshold_spin.setPrefix("Blob Min Thresh: ")
+        self.blob_min_threshold_spin.setRange(0, 255)
+        self.blob_min_threshold_spin.setValue(10)
+        control_layout.addWidget(self.blob_min_threshold_spin)
+
+        self.blob_max_threshold_spin = QSpinBox()
+        self.blob_max_threshold_spin.setPrefix("Blob Max Thresh: ")
+        self.blob_max_threshold_spin.setRange(0, 255)
+        self.blob_max_threshold_spin.setValue(200)
+        control_layout.addWidget(self.blob_max_threshold_spin)
 
         # ROI controls.
         roi_layout = QGridLayout()
@@ -122,10 +140,6 @@ class BeamProfilerGUI(QMainWindow):
         print(f"Applied ROI: {(self.roi_x, self.roi_y, self.roi_w, self.roi_h)}")
 
     def auto_adjust_exposure(self, image, target_ratio=0.8):
-        """
-        Adjusts exposure so that the maximum pixel value is approximately target_ratio of the saturation value.
-        Assumes image is either 8-bit (sat=255) or 16-bit (sat=65535).
-        """
         if image.dtype == np.uint16:
             sat_value = 65535
         else:
@@ -133,11 +147,13 @@ class BeamProfilerGUI(QMainWindow):
         target = target_ratio * sat_value
         current_max = np.max(image)
         try:
-            current_exposure = self.camera.get_exposure()
+            current_exposure = self.camera.ExposureTime  # using property directly
         except AttributeError:
             current_exposure = 1.0
         factor = target / current_max if current_max > 0 else 1.0
-        new_exposure = current_exposure * factor
+        calculated_exposure = current_exposure * factor
+        # Gentle update: only 1% of the new value is added each time.
+        new_exposure = 0.99 * current_exposure + 0.01 * calculated_exposure
         self.camera.ExposureTime = max(
             self._least_exposure, min(self._max_exposure, new_exposure)
         )
@@ -160,10 +176,15 @@ class BeamProfilerGUI(QMainWindow):
             self.camera.Gain = self.gain_spin.value()
 
         # Process the image: detect beam spots and overlay Gaussian fits.
-        spots = blob_detector(im)
+        minThresh = self.blob_min_threshold_spin.value()
+        maxThresh = self.blob_max_threshold_spin.value()
+        spots = blob_detector(im, minThreshold=minThresh, maxThreshold=maxThresh)
+        self.current_spots = spots  # store for mouse selection
+
+        # spots = blob_detector(im)
         # Convert grayscale to BGR for colored overlays.
         disp = cv2.cvtColor(im_disp, cv2.COLOR_GRAY2BGR)
-        for spot in spots:
+        for spot in self.current_spots:
             # Get centroid and sigma parameters.
             x = int(round(spot["x"]))
             y = int(round(spot["y"]))
@@ -230,15 +251,76 @@ class BeamProfilerGUI(QMainWindow):
                 (0, 255, 0),
                 1,
             )
+        # Draw fixed blobs (with, say, yellow outlines and a label)
+        for spot in self.fixed_blobs:
+            x = int(round(spot["x"]))
+            y = int(round(spot["y"]))
+            sigma0 = spot["sigma_0"]
+            sigma1 = spot["sigma_1"]
+            vec0 = spot["vec_0"]
+            angle = np.degrees(np.arctan2(vec0[1], vec0[0]))
+            axes = (int(round(sigma0)), int(round(sigma1)))
+            cv2.ellipse(disp, (x, y), axes, angle, 0, 360, (0, 255, 255), 2)
+            cv2.putText(
+                disp,
+                "FIXED",
+                (x + 10, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 255),
+                1,
+            )
 
             # Also print the information to the console.
             # print(f"Spot at ({x}, {y}) with sigma0: {sigma0:.1f}, sigma1: {sigma1:.1f}")
 
         # Convert the processed image to QImage format and display it.
         height, width, channel = disp.shape
+        self.last_image_size = (disp.shape[1], disp.shape[0])
+
         bytesPerLine = 3 * width
         qImg = QImage(disp.data, width, height, bytesPerLine, QImage.Format_BGR888)
         self.video_label.setPixmap(QPixmap.fromImage(qImg))
+
+    def handle_mouse_press(self, event):
+        pos = event.pos()
+        # Ensure we know the image dimensions (store them in update_frame)
+        if not hasattr(self, "last_image_size"):
+            return
+        label_w = self.video_label.width()
+        label_h = self.video_label.height()
+        img_w, img_h = self.last_image_size  # set in update_frame()
+        scale_x = img_w / label_w
+        scale_y = img_h / label_h
+        click_x = pos.x() * scale_x
+        click_y = pos.y() * scale_y
+
+        # Check if the click is near a fixed blob (toggle removal if so)
+        removal_indices = []
+        for i, spot in enumerate(self.fixed_blobs):
+            x = spot["x"]
+            y = spot["y"]
+            if np.hypot(click_x - x, click_y - y) < 20:
+                removal_indices.append(i)
+        if removal_indices:
+            # Remove any fixed blobs within the threshold and exit.
+            for idx in sorted(removal_indices, reverse=True):
+                del self.fixed_blobs[idx]
+            return
+
+        # Otherwise, check current detected spots to add as fixed
+        if hasattr(self, "current_spots"):
+            closest_spot = None
+            min_dist = float("inf")
+            for spot in self.current_spots:
+                x = spot["x"]
+                y = spot["y"]
+                dist = np.hypot(click_x - x, click_y - y)
+                if dist < min_dist and dist < 20:
+                    min_dist = dist
+                    closest_spot = spot
+            if closest_spot is not None:
+                self.fixed_blobs.append(closest_spot)
 
     def closeEvent(self, event):
         # Clean up by closing the camera when the window is closed.
