@@ -1,4 +1,4 @@
-import cv2, numpy as np
+import cv2, numpy as np, math
 from fit_gaussian import *
 
 
@@ -128,3 +128,86 @@ def blob_detector(im, plot=False):
     spots = keypts_to_spots(keypoints)
     spots = [fit_gaussian_within_roi(im, spot, plot=plot) for spot in spots]
     return spots
+
+
+def render_blobs_with_img(
+    img,
+    spots,
+    rgb: bool = False,
+    render_axis: bool = False,
+    render_xy: bool = False,
+    render_sigma: bool = False,
+    pixel_size=None,
+):
+    color_red = (255, 0, 0) if rgb else 255
+    color_green = (0, 255, 0) if rgb else 255
+    color_blue = (0, 0, 255) if rgb else 255
+    for spot in spots:
+        x = int(round(spot["x"]))
+        y = int(round(spot["y"]))
+        sigma0 = spot["sigma_0"]
+        sigma1 = spot["sigma_1"]
+        vec0 = spot["vec_0"]
+        angle = np.degrees(np.arctan2(vec0[1], vec0[0]))
+        axes = (int(round(sigma0)), int(round(sigma1)))
+        cv2.ellipse(img, (x, y), axes, angle, 0, 360, color_green, 2)
+        if render_axis:
+            angle_rad = np.radians(angle)
+            x_major = int(round(x + sigma0 * np.cos(angle_rad)))
+            y_major = int(round(y + sigma0 * np.sin(angle_rad)))
+            x_minor = int(round(x + sigma1 * np.cos(angle_rad + np.pi / 2)))
+            y_minor = int(round(y + sigma1 * np.sin(angle_rad + np.pi / 2)))
+            cv2.line(img, (x, y), (x_major, y_major), color_red, 2)
+            cv2.line(img, (x, y), (x_minor, y_minor), color_blue, 2)
+            cv2.putText(
+                img,
+                "0",
+                (x_major, y_major),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color_red,
+                1,
+            )
+            cv2.putText(
+                img,
+                "1",
+                (x_minor, y_minor),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color_blue,
+                1,
+            )
+        if render_xy:
+            _Y_spacing = 20
+            _Y_start = int(np.sqrt(sigma0 * sigma1) + 10 + _Y_spacing)
+            cv2.putText(
+                img,
+                f"({x}, {y})",
+                (x, y + _Y_start),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color_green,
+                1,
+            )
+        if render_sigma:
+            sigma0_um = sigma0 * pixel_size * 1e6
+            sigma1_um = sigma1 * pixel_size * 1e6
+            cv2.putText(
+                img,
+                f"s0={sigma0_um:.1f} um",
+                (x, y + _Y_start + _Y_spacing),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color_green,
+                1,
+            )
+            cv2.putText(
+                img,
+                f"s1={sigma1_um:.1f} um",
+                (x, y + _Y_start + 2 * _Y_spacing),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color_green,
+                1,
+            )
+    return img
