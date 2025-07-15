@@ -4,7 +4,6 @@ The Basler Beam Profiler is a Python application designed to interface with Basl
 
 ![Demo](docs/demo.png)
 
-Check release to download the latest version: [Releases](https://github.com/tim4431/Basler_Beam_Profiler/releases)
 
 ## Usage
 ### Running the Application
@@ -22,3 +21,9 @@ camera:
     default_roi: [5060, 5060, 4, 4]    # [width, height, x_pad, y_pad]
     pixel_size: 2.5e-6                 # pixel size in meters, i.e. 2.5um
 ```
+### Using the compiled application
+First clone this repo, setup `camera_config.yaml`
+
+Check release to download the latest version: [Releases](https://github.com/tim4431/Basler_Beam_Profiler/releases)
+
+Put the `pylon_camera.exe` executable in the same directory as `camera_config.yaml`.

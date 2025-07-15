@@ -8,7 +8,7 @@ import os
 
 def load_camera_config():
     """Load camera configuration from YAML file."""
-    config_path = os.path.join(os.path.dirname(__file__), "camera_config.yaml")
+    config_path = "./camera_config.yaml"
     try:
         with open(config_path, "r", encoding="utf-8") as file:
             config = yaml.safe_load(file)
