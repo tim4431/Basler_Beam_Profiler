@@ -1,0 +1,10 @@
+cameras:
+  a2A4504-18umBAS:
+    default_roi: [4504, 4504, 4, 4]
+    pixel_size: 2.74e-6
+  a2A5060-15umBAS:
+    default_roi: [5060, 5060, 4, 4]
+    pixel_size: 2.5e-6
+  acA4024-29um:
+    default_roi: [4024, 3036, 4, 4]
+    pixel_size: 1.85e-6

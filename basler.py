@@ -2,12 +2,29 @@ import numpy as np, matplotlib.pyplot as plt
 from pypylon import pylon
 import time, logging, sys
 from collections import deque
+import yaml
+import os
 
 
-CONSTS = {
-    "a2A4504-18umBAS": {"default_roi": (4504, 4504, 4, 4), "pixel_size": 2.74e-6},
-    "a2A5060-15umBAS": {"default_roi": (5060, 5060, 4, 4), "pixel_size": 2.5e-6},
-}
+def load_camera_config():
+    """Load camera configuration from YAML file."""
+    config_path = os.path.join(os.path.dirname(__file__), "camera_config.yaml")
+    try:
+        with open(config_path, "r", encoding="utf-8") as file:
+            config = yaml.safe_load(file)
+            # Convert list to tuple for default_roi
+            cameras = config["cameras"]
+            for camera_name, camera_config in cameras.items():
+                camera_config["default_roi"] = tuple(camera_config["default_roi"])
+            return cameras
+
+    except Exception as e:
+        logging.error(f"Error loading camera config: {e}")
+        # Fallback to hardcoded values
+        return {}
+
+
+CONSTS = load_camera_config()
 
 
 class BaslerCamera:
