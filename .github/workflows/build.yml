@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: write
+  pull-requests: read
+
 jobs:
   build:
     runs-on: windows-latest
@@ -46,14 +50,14 @@ jobs:
 
     - name: Create Release
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ steps.tag.outputs.release_tag }}
         name: "Basler Camera Profiler ${{ steps.tag.outputs.release_tag }}"
         body: |
           ## Basler Beam Profiler Release
 
-          **Built on:** $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
+          **Built on:** ${{ steps.tag.outputs.release_tag }}
           **Commit:** ${{ github.sha }}
 
           ### What's New
@@ -65,5 +69,4 @@ jobs:
         files: dist/pylon_camera.exe
         draft: false
         prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        fail_on_unmatched_files: true
