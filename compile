@@ -1,1 +1,1 @@
-pyinstaller --onefile beam_profiler.py
+pyinstaller --onefile pylon_camera.py
