@@ -1,1 +1,6 @@
 __pycache__/
+build/
+dist/
+*.spec
+# GitHub Actions artifacts
+.github/workflows/*.log
