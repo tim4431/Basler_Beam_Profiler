@@ -1,4 +1,4 @@
-name: Build Executable
+name: Build and Release
 
 on:
   push:
@@ -33,3 +33,37 @@ jobs:
         name: pylon_camera-executable
         path: dist/pylon_camera.exe
         retention-days: 30
+
+    - name: Generate release tag
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      id: tag
+      run: |
+        $date = Get-Date -Format "yyyy.MM.dd.HHmm"
+        $tag = "v$date"
+        echo "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
+        echo "release_tag=$tag" >> $env:GITHUB_OUTPUT
+      shell: pwsh
+
+    - name: Create Release
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.tag.outputs.release_tag }}
+        name: "Basler Camera Profiler ${{ steps.tag.outputs.release_tag }}"
+        body: |
+          ## Basler Beam Profiler Release
+
+          **Built on:** $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC")
+          **Commit:** ${{ github.sha }}
+
+          ### What's New
+          - Latest build of Basler Beam Profiler
+          - Windows executable ready to use
+
+          ### Download
+          Download the `pylon_camera.exe` file below and run it directly on Windows.
+        files: dist/pylon_camera.exe
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
