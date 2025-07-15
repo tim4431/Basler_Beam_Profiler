@@ -1,0 +1,131 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable with PyInstaller (Windows)
+        run: |
+          pyinstaller --onefile pylon_camera.py
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pylon_camera-windows
+          path: dist/pylon_camera.exe
+          retention-days: 30
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build .app with PyInstaller (macOS)
+        run: |
+          pyinstaller --windowed --name pylon_camera pylon_camera.py
+
+      - name: Create /Applications symlink
+        run: |
+          mkdir -p dmg_temp
+          cp -R dist/pylon_camera.app dmg_temp/
+          ln -s /Applications dmg_temp/Applications
+
+      - name: Create .dmg with drag-and-drop installer
+        run: |
+          hdiutil create dist/pylon_camera.dmg \
+            -volname "PylonCamera" \
+            -srcfolder dmg_temp \
+            -ov -format UDZO
+
+      - name: Upload macOS .dmg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pylon_camera-macos
+          path: dist/pylon_camera.dmg
+          retention-days: 30
+
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pylon_camera-windows
+          path: artifacts/windows
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pylon_camera-macos
+          path: artifacts/macos
+
+      - name: Generate release tag
+        id: tag
+        run: |
+          date=$(date +"%Y.%m.%d.%H%M")
+          echo "release_tag=v$date" >> "$GITHUB_OUTPUT"
+          echo "RELEASE_TAG=v$date" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          name: "Basler Camera Profiler ${{ steps.tag.outputs.release_tag }}"
+          body: |
+            ## Basler Beam Profiler Release
+
+            **Built on:** ${{ steps.tag.outputs.release_tag }}
+            **Commit:** ${{ github.sha }}
+
+            ### What's New
+            - 🪟 Windows: `pylon_camera.exe`
+            - 🍎 macOS: `pylon_camera.dmg` (with drag-and-drop installer)
+
+            ### macOS Install
+            - Open the `.dmg` and drag `pylon_camera.app` into the `Applications` folder.
+
+            ### Download
+            Choose the executable for your platform below.
+          files: |
+            artifacts/windows/pylon_camera.exe
+            artifacts/macos/pylon_camera.dmg
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
