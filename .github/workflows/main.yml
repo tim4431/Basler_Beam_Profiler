@@ -58,10 +58,11 @@ jobs:
         run: |
           pyinstaller --windowed --name pylon_camera pylon_camera.py
 
-      - name: Create /Applications symlink
+      - name: Add editable camera_config.yaml and link to /Applications
         run: |
           mkdir -p dmg_temp
           cp -R dist/pylon_camera.app dmg_temp/
+          cp camera_config.yaml dmg_temp/
           ln -s /Applications dmg_temp/Applications
 
       - name: Create .dmg with drag-and-drop installer
@@ -116,10 +117,11 @@ jobs:
 
             ### What's New
             - 🪟 Windows: `pylon_camera.exe`
-            - 🍎 macOS: `pylon_camera.dmg` (with drag-and-drop installer)
+            - 🍎 macOS: `pylon_camera.dmg` (with drag-and-drop installer + editable config)
 
             ### macOS Install
-            - Open the `.dmg` and drag `pylon_camera.app` into the `Applications` folder.
+            - Open the `.dmg`, drag `pylon_camera.app` and `camera_config.yaml` to the same folder.
+            - Edit `camera_config.yaml` as needed.
 
             ### Download
             Choose the executable for your platform below.
