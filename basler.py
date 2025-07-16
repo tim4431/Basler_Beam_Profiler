@@ -6,23 +6,54 @@ import yaml
 import os
 
 
+DEFAULT_CONFIG = {
+    "cameras": {
+        "a2A4504-18umBAS": {
+            "default_roi": [4504, 4504, 4, 4],
+            "pixel_size": 2.74e-6
+        },
+        "a2A5060-15umBAS": {
+            "default_roi": [5060, 5060, 4, 4],
+            "pixel_size": 2.5e-6
+        },
+        "acA4024-29um": {
+            "default_roi": [4024, 3036, 4, 4],
+            "pixel_size": 1.85e-6
+        }
+    }
+}
+
+def get_config_path():
+    """Get the path where camera_config.yaml is expected."""
+    if getattr(sys, 'frozen', False):
+        bundle_path = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        bundle_path = os.path.dirname(__file__)
+    return os.path.join(bundle_path, "camera_config.yaml")
+
 def load_camera_config():
-    """Load camera configuration from YAML file."""
-    config_path = "./camera_config.yaml"
+    """Load camera configuration or create default if not found."""
+    config_path = get_config_path()
+    if not os.path.exists(config_path):
+        logging.warning(f"{config_path} not found. Creating default config.")
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                yaml.dump(DEFAULT_CONFIG, f, default_flow_style=False, sort_keys=False)
+        except Exception as e:
+            logging.error(f"Failed to write default config: {e}")
+            return {}
+        return DEFAULT_CONFIG["cameras"]
+
     try:
         with open(config_path, "r", encoding="utf-8") as file:
             config = yaml.safe_load(file)
-            # Convert list to tuple for default_roi
             cameras = config["cameras"]
             for camera_name, camera_config in cameras.items():
                 camera_config["default_roi"] = tuple(camera_config["default_roi"])
             return cameras
-
     except Exception as e:
-        logging.error(f"Error loading camera config: {e}")
-        # Fallback to hardcoded values
+        logging.error(f"Error loading camera config from {config_path}: {e}")
         return {}
-
 
 CONSTS = load_camera_config()
 
