@@ -1,6 +1,8 @@
 opencv-python
-pypylon
+# Optional Basler driver: pip install pypylon
+# FLIR: install the matching vendor spinnaker_python wheel (see docs/macos.md).
 numpy
+scipy
 PyYAML
 Flask
 
@@ -11,3 +13,6 @@ Flask
 # Install the wheel matching your CUDA toolkit, e.g. cupy-cuda12x.
 # Without it everything falls back to the (slower) numpy path.
 # cupy-cuda12x
+
+# Native close button for the OpenCV Cocoa window.
+pyobjc-framework-Cocoa; sys_platform == "darwin"

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 from threading import Thread
 
@@ -27,19 +28,21 @@ from ..roi import ROIModel, ViewTransform
 from ..status import write_status
 from . import overlays, settings
 
-WINDOW = "Basler"
+WINDOW = "Beam Profiler - Basler / FLIR"
 
-# waitKeyEx arrow codes: Windows and Linux(GTK) report different values
+# waitKeyEx arrow codes: Windows, Cocoa(macOS), and Linux(GTK) report different values
 KEY_FACTORS = {
-    2555904: 1.1, 65363: 1.1,  # right: +10%
-    2424832: 0.9, 65361: 0.9,  # left:  -10%
-    2490368: 10, 65362: 10,  # up:    x10
-    2621440: 0.1, 65364: 0.1,  # down:  /10
+    2555904: 1.1, 65363: 1.1, 63235: 1.1,  # right: +10%
+    2424832: 0.9, 65361: 0.9, 63234: 0.9,  # left:  -10%
+    2490368: 10, 65362: 10, 63232: 10,  # up:    x10
+    2621440: 0.1, 65364: 0.1, 63233: 0.1,  # down:  /10
 }
 
 
 class Viewer:
     def __init__(self, cameras: list):
+        self._quit_requested = False
+        self._native_close_handler = None
         self.cameras = cameras
         self.curr_idx = 0
         self.camera = cameras[0]
@@ -75,9 +78,17 @@ class Viewer:
         # WINDOW_GUI_NORMAL drops the Qt toolbar and the pixel-hover overlay,
         # which render as black/garbled boxes (OpenCV's bundled Qt has no fonts)
         gpu.warm_up()  # pay the CuPy import off the critical path
+        settings.prepare_gui()
         cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
         cv2.resizeWindow(WINDOW, WINDOW_SIZE, WINDOW_SIZE)
         cv2.setMouseCallback(WINDOW, self.on_mouse)
+        if sys.platform == "darwin":
+            from .macos import attach_close_button
+            self._native_close_handler = attach_close_button(WINDOW, self.request_close)
+
+    def request_close(self):
+        self._quit_requested = True
+
 
     # ------------------------------ properties --------------------------- #
     @property
@@ -98,12 +109,25 @@ class Viewer:
         return ViewTransform(self.camera.ROI, WINDOW_SIZE)
 
     # ------------------------------ main loop ----------------------------- #
-    def run(self):
+    def run(self, max_frames=None):
+        try:
+            self._run_loop(max_frames=max_frames)
+        finally:
+            cv2.destroyAllWindows()
+            settings.destroy_settings()
+
+    def _run_loop(self, max_frames=None):
+        frame_count = 0
         os.makedirs(DATA_DIR, exist_ok=True)
         while True:
+            settings.pump_events()
+            if self._quit_requested or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
+                break
             t0 = time.time()
             frame = self.camera.grab_image()
             if frame is None:
+                if not self._handle_key(cv2.waitKeyEx(10)):
+                    break
                 continue
             self.current_frame = frame
             frame_disp = (
@@ -129,10 +153,10 @@ class Viewer:
             cv2.imshow(WINDOW, disp)
             if not self._handle_key(cv2.waitKeyEx(1)):
                 break
+            frame_count += 1
+            if max_frames is not None and frame_count >= max_frames:
+                break
             self._sleep_for_fps(time.time() - t0)
-
-        self.camera.close()
-        cv2.destroyAllWindows()
 
     def _detect(self, frame) -> SpotArray:
         spots = detect_spots(frame)
@@ -205,7 +229,7 @@ class Viewer:
             f"Fit: {fitconfig.describe()} (Press 'o' for settings)",
             f"Web Server: {'ON' if self.web_server_enabled else 'OFF'}, "
             f"Rect Stats: {'ON' if self.show_rect_stats else 'OFF'} (Press 'w' to toggle)",
-            f"exposure_sync: {self.camera.userdefined_line_enabled} (Press 'y' to toggle)",
+            f"User output: {self.camera.userdefined_line_enabled} (Press 'y' to toggle)",
         ]
 
     def _draw_rectangles(self, disp, view: ViewTransform):
@@ -281,7 +305,7 @@ class Viewer:
         if view.contains(x, y):
             sx, sy = view.to_sensor(x, y)
             self.last_mouse = (int(sx), int(sy))
-        ctrl = flags & cv2.EVENT_FLAG_CTRLKEY
+        ctrl = flags & (cv2.EVENT_FLAG_CTRLKEY | cv2.EVENT_FLAG_SHIFTKEY)
 
         if event == cv2.EVENT_MOUSEWHEEL:
             if ctrl:  # change aspect ratio, keeping the long edge fixed
@@ -369,9 +393,10 @@ class Viewer:
         if self.auto_exp:
             return
         self.exposure_us = int(
-            np.clip(self.exposure_us * factor, MIN_EXPOSURE_US, MAX_EXPOSURE_US)
+            np.clip(self.camera.ExposureTime * factor, MIN_EXPOSURE_US, MAX_EXPOSURE_US)
         )
         self.camera.ExposureTime = self.exposure_us
+        self.exposure_us = self.camera.ExposureTime
 
     # ------------------------------ actions ------------------------------- #
     def _save_frame(self, jpg_path: str):
@@ -385,18 +410,13 @@ class Viewer:
         self._save_frame(os.path.join(DATA_DIR, f"vipa_{ts}.jpg"))
 
     def _dialog_save(self):
-        import tkinter as tk
-        from tkinter import filedialog
-
-        root = tk.Tk()
-        root.withdraw()
-        fp = filedialog.asksaveasfilename(
+        fp = settings.save_dialog(
             initialdir=DATA_DIR,
             initialfile=f"vipa_{time.strftime('%Y%m%d_%H%M%S')}.jpg",
             title="Save Image",
             filetypes=(("JPEG files", "*.jpg"), ("All files", "*.*")),
+            defaultextension=".jpg",
         )
-        root.destroy()
         if fp:
             self._save_frame(fp)
 

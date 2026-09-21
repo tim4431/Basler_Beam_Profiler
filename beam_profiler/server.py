@@ -161,13 +161,13 @@ def create_app(viewer) -> Flask:
             for m, path, desc in ENDPOINTS
         )
         return f"""<!DOCTYPE html>
-<html><head><title>Basler Camera Server</title><style>
+<html><head><title>Beam Profiler Server</title><style>
   body {{ font-family: Arial, sans-serif; margin: 20px; }}
   .endpoint {{ margin: 10px 0; padding: 10px; background: #f0f0f0; border-radius: 5px; }}
   .method {{ color: #007acc; font-weight: bold; }}
   pre {{ background: #f8f8f8; padding: 10px; border-radius: 3px; overflow-x: auto; }}
 </style></head><body>
-<h1>Basler Camera Web Server</h1>
+<h1>Beam Profiler Web Server</h1>
 <h2>Available Endpoints:</h2>
 {rows}
 <h2>Examples:</h2>

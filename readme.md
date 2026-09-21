@@ -1,4 +1,9 @@
-# Basler Beam Profiler
+# Basler / FLIR Beam Profiler for macOS
+
+**Mac + FLIR:** double-click `Launch FLIR.command`, or run `./run.sh --camera flir`.
+See [Mac setup, controls, and tested capabilities](docs/macos.md). This version
+supports the connected BFS-U3-31S4M-C and keeps the original shared analysis tools.
+Basler users additionally install `requirements-basler.txt`.
 
 A Python application for live laser-beam profiling with Basler cameras: spot
 detection, sub-pixel 2D Gaussian fits, beam-array (grid) statistics, an HTTP

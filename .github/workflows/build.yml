@@ -2,70 +2,99 @@ name: Build and Release
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
-  pull-requests: read
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
-
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r requirements-basler.txt pyinstaller
+      - name: Build Windows executable
+        run: python -m PyInstaller --noconfirm --onefile pylon_camera.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pylon_camera-windows
+          path: dist/pylon_camera.exe
+          if-no-files-found: error
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.12'
+  build-macos:
+    name: Build macOS app and DMG (Apple Silicon)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - name: Install dependencies
+        run: python -m pip install -r requirements-macos-build.txt
+      - name: Extract pinned FLIR runtime
+        run: |
+          cd external_libs/flir/macos-arm64
+          shasum -a 256 -c SHA256SUMS
+          mkdir -p ../../../.vendor
+          tar -xzf runtime-4.4.0.246-cp312.tar.gz -C ../../../.vendor
+      - name: Build macOS app with bundled Basler and FLIR libraries
+        env:
+          BEAM_REQUIRE_FLIR: '1'
+        run: python -m PyInstaller --noconfirm pylon_camera.spec
+      - name: Verify bundled camera drivers
+        run: |
+          python -m tools.check_macos_bundle dist/pylon_camera.app
+          dist/pylon_camera.app/Contents/MacOS/pylon_camera --check-drivers
+      - name: Smoke-test packaged app
+        run: dist/pylon_camera.app/Contents/MacOS/pylon_camera --sim --frames 3
+      - name: Create macOS disk image
+        run: |
+          mkdir -p dmg_temp
+          cp -R dist/pylon_camera.app dmg_temp/
+          cp docs/macos.md dmg_temp/README.md
+          ln -s /Applications dmg_temp/Applications
+          hdiutil create dist/pylon_camera-macos-arm64.dmg -volname BeamProfiler -srcfolder dmg_temp -ov -format UDZO
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pylon_camera-macos-arm64
+          path: dist/pylon_camera-macos-arm64.dmg
+          if-no-files-found: error
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install pyinstaller
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pylon_camera-*
+          path: artifacts
+          merge-multiple: true
+      - name: Generate release tag
+        id: tag
+        run: echo "value=v$(date -u +%Y.%m.%d.%H%M%S)-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.value }}
+          name: Beam Profiler ${{ steps.tag.outputs.value }}
+          body: |
+            Windows executable and Apple Silicon macOS app.
 
-    - name: Build executable with PyInstaller
-      run: |
-        pyinstaller --onefile pylon_camera.py
+            macOS: open the DMG and drag pylon_camera.app into Applications.
+            The app is ad-hoc signed, not Apple-notarized. Configuration and saved
+            frames are under ~/Library/Application Support/BeamProfiler.
 
-    - name: Upload executable artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: pylon_camera-executable
-        path: dist/pylon_camera.exe
-        retention-days: 30
-
-    - name: Generate release tag
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-      id: tag
-      run: |
-        $date = Get-Date -Format "yyyy.MM.dd.HHmm"
-        $tag = "v$date"
-        echo "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
-        echo "release_tag=$tag" >> $env:GITHUB_OUTPUT
-      shell: pwsh
-
-    - name: Create Release
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: ${{ steps.tag.outputs.release_tag }}
-        name: "Basler Camera Profiler ${{ steps.tag.outputs.release_tag }}"
-        body: |
-          ## Basler Beam Profiler Release
-
-          **Built on:** ${{ steps.tag.outputs.release_tag }}
-          **Commit:** ${{ github.sha }}
-
-          ### What's New
-          - Latest build of Basler Beam Profiler
-          - Windows executable ready to use
-
-          ### Download
-          Download the `pylon_camera.exe` file below and run it directly on Windows.
-        files: dist/pylon_camera.exe
-        draft: false
-        prerelease: false
-        fail_on_unmatched_files: true
+            Basler, FLIR and simulation support are bundled. No separate Python,
+            Spinnaker SDK, pylon SDK or Homebrew installation is required.
+            Requires Apple Silicon and macOS 26 or later. Third-party runtime
+            libraries retain their vendor licenses, included inside the app.
+          files: |
+            artifacts/pylon_camera.exe
+            artifacts/pylon_camera-macos-arm64.dmg
+          fail_on_unmatched_files: true

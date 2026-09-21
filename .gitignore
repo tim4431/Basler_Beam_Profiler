@@ -12,3 +12,8 @@ test_images/*.npy
 .venv/
 .pytest_cache/
 fit_config.json    # per-machine spot-fitting settings, written by the settings window
+
+.python/
+fit_config.json
+
+.vendor/

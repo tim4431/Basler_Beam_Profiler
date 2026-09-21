@@ -1,5 +1,4 @@
-"""Camera discovery: real Basler cameras with a simulated fallback."""
-
+"""Camera discovery with optional vendor SDKs and an explicit simulation mode."""
 from __future__ import annotations
 
 import logging
@@ -10,19 +9,40 @@ from .simulated import SimulatedCamera
 __all__ = ["Camera", "SimulatedCamera", "open_cameras"]
 
 
-def open_cameras(mode: str = "16Bit", simulate: bool = False, **sim_opts) -> list[Camera]:
-    """Open every connected Basler camera; fall back to the simulator when
-    none are found (or when `simulate` is set)."""
-    if not simulate:
+def _open_basler(mode):
+    from pypylon import pylon
+    from .basler import BaslerCamera
+    cameras = []
+    try:
+        for i, _ in enumerate(pylon.TlFactory.GetInstance().EnumerateDevices()):
+            cameras.append(BaslerCamera(mode=mode, device_idx=i))
+        return cameras
+    except Exception:
+        for camera in cameras:
+            camera.close()
+        raise
+
+
+def open_cameras(mode="16Bit", simulate=False, backend="auto", **sim_opts):
+    if backend not in ("auto", "flir", "basler", "sim"):
+        raise ValueError(f"Unknown camera backend: {backend}")
+    if simulate or backend == "sim":
+        return [SimulatedCamera(mode=mode, **sim_opts)]
+    from .flir import open_flir_cameras
+    cameras = []
+    for name, discover in (("flir", open_flir_cameras), ("basler", _open_basler)):
+        if backend not in ("auto", name):
+            continue
         try:
-            from pypylon import pylon
-
-            from .basler import BaslerCamera
-
-            devices = pylon.TlFactory.GetInstance().EnumerateDevices()
-            if devices:
-                return [BaslerCamera(mode=mode, device_idx=i) for i in range(len(devices))]
-            logging.warning("No Basler cameras detected - using the simulated camera.")
-        except ImportError:
-            logging.warning("pypylon not installed - using the simulated camera.")
+            found = discover(mode)
+            if not found and backend == name:
+                raise RuntimeError(f"No {name.upper()} cameras detected. Check USB and the vendor viewer.")
+            cameras.extend(found)
+        except Exception as exc:
+            if backend == name:
+                raise RuntimeError(f"Cannot open {name.upper()} camera: {exc}") from exc
+            logging.warning("%s discovery: %s", name.upper(), exc)
+    if cameras:
+        return cameras
+    logging.warning("NO HARDWARE CONNECTED: using SIMULATED data. Use --camera flir to require FLIR.")
     return [SimulatedCamera(mode=mode, **sim_opts)]

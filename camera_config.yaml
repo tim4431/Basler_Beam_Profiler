@@ -7,4 +7,21 @@ cameras:
     pixel_size: 2.5e-6
   acA4024-29um:
     default_roi: [4024, 3036, 4, 4]
-    pixel_size: 1.85e-6
+    pixel_size: 1.851e-6
+  # FLIR DeviceModelName omits the lens-mount suffix (-C).
+  BFS-U3-31S4M: &blackfly_31s4
+    default_roi: [2048, 1536, 0, 0]
+    pixel_size: 3.45e-6
+    # Optional outputs; see docs/macos.md before connecting external hardware.
+    sync:
+      exposure_line: Line1
+      user_line: Line2
+      user_output: UserOutput0
+  BFS-U3-31S4M-C:
+    default_roi: [2048, 1536, 0, 0]
+    pixel_size: 3.45e-6
+    sync:
+      exposure_line: Line1
+      user_line: Line2
+      user_output: UserOutput0
+  Blackfly S BFS-U3-31S4M: *blackfly_31s4

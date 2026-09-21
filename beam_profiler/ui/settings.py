@@ -1,24 +1,8 @@
-"""Live settings window for the spot fit (press `o` in the viewer).
-
-Runs its own Tk event loop on a daemon thread so the OpenCV grab/draw loop on
-the main thread is never blocked.  Nothing is mutated in place: edits build a
-new `FitConfig` and hand it to `fitconfig.set_active`, which swaps it in
-atomically, so a frame in flight can never see a half-applied change.
-
-Every control is generated from `fitconfig.SETTINGS`, so adding a knob there
-adds it here with its range, its type and its explanation - there is no
-per-field UI code to keep in sync.
-
-The root is created once and merely hidden on close: Tk does not reliably
-allow a second `tk.Tk()` in the same process after the first is destroyed
-(it fails with "tk wasn't installed properly"), which would stop the window
-reopening.  The daemon thread therefore lives for the life of the process.
-"""
+"""Fitting controls serviced on the main GUI thread, including on macOS."""
 
 from __future__ import annotations
 
 import logging
-import threading
 import tkinter as tk
 from tkinter import ttk
 
@@ -27,25 +11,59 @@ from .. import fitconfig
 SLIDER_SPAN = 200.0  # ranges wider than this get a plain entry box instead
 
 _window: SettingsWindow | None = None
-_lock = threading.Lock()
+_gui_root: tk.Tk | None = None
+
+
+def prepare_gui():
+    """Tk must initialize Cocoa before OpenCV creates NSApplication on macOS."""
+    global _gui_root
+    if _gui_root is None:
+        _gui_root = tk.Tk()
+        _gui_root.withdraw()
+    return _gui_root
 
 
 def open_settings():
-    """Open the settings window, or raise it if it is already open."""
+    """Create once on the main thread; the viewer pumps Tk between frames."""
     global _window
-    with _lock:
-        if _window is not None:
-            _window.show()
-            return
-        _window = SettingsWindow()
-        threading.Thread(target=_window.run, name="fit-settings", daemon=True).start()
+    if _window is None:
+        window = SettingsWindow()
+        try:
+            window._build()
+            window.alive = True
+        except Exception:
+            window.destroy()
+            raise
+        _window = window
+    else:
+        _window.show()
+
+
+def pump_events():
+    if _gui_root is not None:
+        _gui_root.update_idletasks()
+        _gui_root.update()
 
 
 def close_settings():
-    """Hide the window; the Tk root stays alive so it can be reopened."""
-    with _lock:
-        if _window is not None:
-            _window.close()
+    if _window is not None:
+        _window.close()
+
+
+def destroy_settings():
+    global _window, _gui_root
+    if _window is not None:
+        _window.destroy()
+        _window = None
+    if _gui_root is not None:
+        _gui_root.destroy()
+        _gui_root = None
+
+
+def save_dialog(**options):
+    from tkinter import filedialog
+    # Reuse the existing Tk interpreter; do not create/destroy a second root.
+    return filedialog.asksaveasfilename(parent=prepare_gui(), **options)
 
 
 class SettingsWindow:
@@ -71,7 +89,7 @@ class SettingsWindow:
         # widget construction fires the slider callbacks; ignore them until
         # every control exists, or _collect sees a half-built _vars
         self._applying = True
-        self._root = root = tk.Tk()
+        self._root = root = tk.Toplevel(prepare_gui())
         root.title("Spot fitting settings")
         root.minsize(560, 640)
         root.protocol("WM_DELETE_WINDOW", self.close)  # hide, keep the root

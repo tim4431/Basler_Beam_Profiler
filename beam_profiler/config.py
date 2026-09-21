@@ -5,15 +5,23 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import shutil
 
 import yaml
 
 
 def app_dir() -> str:
-    """Next to the .exe when frozen by PyInstaller, the repo root otherwise.
-    Everything the user is meant to see or edit (data/, camera_config.yaml,
-    pylon_camera.json) lives here."""
+    """Writable data directory: macOS Application Support, beside a Windows
+    executable, or the repository root when running from source."""
     if getattr(sys, "frozen", False):
+        if sys.platform == "darwin":
+            path = os.path.expanduser("~/Library/Application Support/BeamProfiler")
+            os.makedirs(path, exist_ok=True)
+            config = os.path.join(path, "camera_config.yaml")
+            bundled = os.path.join(sys._MEIPASS, "camera_config.yaml")
+            if not os.path.exists(config) and os.path.isfile(bundled):
+                shutil.copyfile(bundled, config)
+            return path
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
