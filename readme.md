@@ -87,8 +87,13 @@ Put the `pylon_camera.exe` executable in the same directory as `camera_config.ya
 Saved frames (`data/`) and the live status file (`pylon_camera.json`) are written
 next to the executable.
 
+A toolbar along the bottom edge of the window gives mouse access to the most
+common toggles — Fit, Stats, Grid, Web, Save and the Settings window — with
+the active ones highlighted. Closing the window (title-bar X) quits the
+application, same as `Esc`.
+
 ### Keyboard Shortcuts
-- `Esc`: Quit the application
+- `Esc`: Quit the application (or close the window)
 - `arrow keys`: up/down=change exposure by 10 times, left/right=change exposure by 10%
 - `a`: toggle auto-exposure (auto exposure adjusts the exposure time to keep the max intensity to be near-saturated)
 - `f`: toggle blob fitting

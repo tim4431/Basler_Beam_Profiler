@@ -17,10 +17,24 @@ WHITE, YELLOW, CYAN, GREEN, RED = (
     (0, 0, 255),
 )
 LINE_H = 26
+ACCENT = (255, 160, 40)  # sky blue as drawn by imshow
+PANEL_COLOR = (24, 20, 16)
 
 
 def text(img, s, xy, color=YELLOW, scale=0.7, thickness=2):
     cv2.putText(img, s, xy, FONT, scale, color, thickness, cv2.LINE_AA)
+
+
+def panel(img, x0, y0, x1, y1, alpha=0.55, color=PANEL_COLOR):
+    """Blend a translucent dark rectangle into the image (modern HUD ground)."""
+    x0, y0 = max(int(x0), 0), max(int(y0), 0)
+    x1, y1 = min(int(x1), img.shape[1]), min(int(y1), img.shape[0])
+    if x1 <= x0 or y1 <= y0:
+        return
+    region = img[y0:y1, x0:x1]
+    overlay = np.empty_like(region)
+    overlay[:] = color
+    cv2.addWeighted(overlay, alpha, region, 1 - alpha, 0, dst=region)
 
 
 def hbar(img, x, y, value, factor, color=CYAN, max_len=100, height=20):
@@ -42,20 +56,65 @@ def centered_bar(img, x, y, value, factor, max_len=100, height=20):
 
 
 def draw_hud(img, lines: list[str]) -> int:
-    """Top-left HUD text block; returns the y coordinate after the last line."""
+    """Top-left HUD text block on a translucent panel; returns the y
+    coordinate after the last line."""
+    scale, thickness = 0.6, 1
+    width = max(cv2.getTextSize(line, FONT, scale, thickness)[0][0] for line in lines)
+    panel(img, 0, 0, width + 24, 5 + LINE_H * len(lines) + 12)
     y = 5
     for line in lines:
         y += LINE_H
-        text(img, line, (10, y), WHITE)
+        text(img, line, (12, y), WHITE, scale=scale, thickness=thickness)
     return y
+
+
+class Toolbar:
+    """Clickable button bar along the bottom edge of the window.
+
+    Layout is computed once in display coordinates; the viewer asks `hit`
+    on mouse events and `draw` every frame with the current toggle states."""
+
+    HEIGHT = 40
+    MARGIN = 12
+    GAP = 10
+
+    def __init__(self, items: list[tuple[str, str]], window_size: int):
+        self.items = items
+        n = len(items)
+        w = (window_size - 2 * self.MARGIN - (n - 1) * self.GAP) // n
+        y1 = window_size - self.MARGIN
+        y0 = y1 - self.HEIGHT
+        self.rects = {}
+        for i, (name, _label) in enumerate(items):
+            x0 = self.MARGIN + i * (w + self.GAP)
+            self.rects[name] = (x0, y0, x0 + w, y1)
+
+    def hit(self, x: int, y: int) -> str | None:
+        for name, (x0, y0, x1, y1) in self.rects.items():
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                return name
+        return None
+
+    def draw(self, img, states: dict[str, bool], hover: str | None = None):
+        for name, label in self.items:
+            x0, y0, x1, y1 = self.rects[name]
+            active = states.get(name, False)
+            if active:
+                panel(img, x0, y0, x1, y1, alpha=0.85, color=ACCENT)
+            else:
+                panel(img, x0, y0, x1, y1, alpha=0.75 if hover == name else 0.55)
+            border = WHITE if hover == name else (140, 140, 140)
+            cv2.rectangle(img, (x0, y0), (x1, y1), border, 1, cv2.LINE_AA)
+            color = WHITE if active or hover == name else (210, 210, 210)
+            (tw, th), _ = cv2.getTextSize(label, FONT, 0.55, 1)
+            text(img, label, (x0 + (x1 - x0 - tw) // 2, y0 + (self.HEIGHT + th) // 2),
+                 color, scale=0.55, thickness=1)
 
 
 def draw_rect_stats(img, stats: dict | None, y: int) -> int:
     """Live pixel statistics of the white rectangle; returns the next free y."""
     if stats is None:
         return y
-    y += 24
-    text(img, "=== Rect Stats ===", (10, y), GREEN)
     lines = [
         f"Sum: {stats['sum']:,}",
         f"Mean: {stats['mean']:.1f}, Std: {stats['std']:.1f}",
@@ -64,9 +123,13 @@ def draw_rect_stats(img, stats: dict | None, y: int) -> int:
         f"({stats['width_um']:.1f}x{stats['height_um']:.1f} um)",
         f"Total pixels: {stats['total_pixels']:,}",
     ]
+    width = max(cv2.getTextSize(line, FONT, 0.6, 1)[0][0] for line in lines)
+    panel(img, 0, y + 6, width + 24, y + 24 * (len(lines) + 1) + 12)
+    y += 24
+    text(img, "Rect stats", (12, y), GREEN, scale=0.6)
     for line in lines:
         y += 24
-        text(img, line, (10, y), CYAN, scale=0.6)
+        text(img, line, (12, y), CYAN, scale=0.6, thickness=1)
     return y + 24
 
 

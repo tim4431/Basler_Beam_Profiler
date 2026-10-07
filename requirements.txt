@@ -8,6 +8,7 @@ Flask
 # pip install pyinstaller
 
 # optional: GPU spot fitting (see beam_profiler/processing/gpu.py).
-# Install the wheel matching your CUDA toolkit, e.g. cupy-cuda12x.
+# Install the wheel matching your CUDA driver, e.g. cupy-cuda13x
+# (cupy-cuda12x for CUDA 12 machines).
 # Without it everything falls back to the (slower) numpy path.
-# cupy-cuda12x
+# cupy-cuda13x

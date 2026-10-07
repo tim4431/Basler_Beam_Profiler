@@ -26,6 +26,16 @@ from .. import fitconfig
 
 SLIDER_SPAN = 200.0  # ranges wider than this get a plain entry box instead
 
+# palette shared by every widget style (light, flat, single accent)
+BG = "#eceff4"
+CARD = "#ffffff"
+BORDER = "#d8dee9"
+ACCENT = "#2563eb"
+ACCENT_DARK = "#1d4ed8"
+TEXT = "#1f2430"
+SUBTEXT = "#5b6472"
+FIELD = "#f6f8fb"
+
 _window: SettingsWindow | None = None
 _lock = threading.Lock()
 
@@ -48,9 +58,16 @@ def close_settings():
             _window.close()
 
 
+def is_open() -> bool:
+    """Whether the window is currently shown (read from any thread)."""
+    w = _window
+    return bool(w is not None and w.visible)
+
+
 class SettingsWindow:
     def __init__(self):
         self.alive = False
+        self.visible = False
         self._root: tk.Tk | None = None
         self._vars: dict[str, tk.Variable] = {}
         self._applying = False  # suppress the write-back while we refresh widgets
@@ -66,6 +83,7 @@ class SettingsWindow:
             logging.error(f"settings window failed: {e}")
         finally:
             self.alive = False
+            self.visible = False
 
     def _build(self):
         # widget construction fires the slider callbacks; ignore them until
@@ -73,31 +91,41 @@ class SettingsWindow:
         self._applying = True
         self._root = root = tk.Tk()
         root.title("Spot fitting settings")
-        root.minsize(560, 640)
+        root.minsize(580, 680)
+        root.configure(background=BG)
         root.protocol("WM_DELETE_WINDOW", self.close)  # hide, keep the root
+        self._style(root)
 
-        header = ttk.Label(
-            root,
-            text="Changes apply to the next frame and are saved to fit_config.json.",
-            padding=(10, 8),
-        )
+        header = ttk.Frame(root, padding=(16, 14, 16, 4))
         header.pack(fill="x")
+        ttk.Label(header, text="Spot fitting", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            header,
+            text="Changes apply to the next frame and are saved to fit_config.json.",
+            style="Sub.TLabel",
+        ).pack(anchor="w", pady=(2, 0))
 
-        body = ttk.Frame(root, padding=(10, 0))
+        body = ttk.Frame(root, padding=(16, 0))
         body.pack(fill="both", expand=True)
 
         cfg = fitconfig.active()
         groups: dict[str, ttk.LabelFrame] = {}
         for s in fitconfig.SETTINGS:
             if s.group not in groups:
-                frame = ttk.LabelFrame(body, text=s.group, padding=(10, 6))
-                frame.pack(fill="x", pady=(6, 0))
+                frame = ttk.LabelFrame(
+                    body, text=f" {s.group} ", style="Card.TLabelframe", padding=(12, 8)
+                )
+                frame.pack(fill="x", pady=(8, 0))
                 frame.columnconfigure(1, weight=1)
                 groups[s.group] = frame
             self._add_row(groups[s.group], s, getattr(cfg, s.name))
 
-        self._help = tk.Text(root, height=8, wrap="word", relief="sunken", borderwidth=1)
-        self._help.pack(fill="both", expand=False, padx=10, pady=(10, 0))
+        self._help = tk.Text(
+            root, height=7, wrap="word", relief="flat", borderwidth=0,
+            background=FIELD, foreground=SUBTEXT, padx=12, pady=10,
+            highlightthickness=1, highlightbackground=BORDER, highlightcolor=BORDER,
+        )
+        self._help.pack(fill="both", expand=False, padx=16, pady=(12, 0))
         self._help.configure(state="disabled")
         self._set_help(
             "Hover or focus a setting to see what it does.\n\n"
@@ -105,30 +133,87 @@ class SettingsWindow:
             "docs/fitting-calibration.md shows the measurements behind each default."
         )
 
-        buttons = ttk.Frame(root, padding=10)
+        buttons = ttk.Frame(root, padding=16)
         buttons.pack(fill="x")
         ttk.Button(buttons, text="Restore defaults", command=self._defaults).pack(side="left")
         ttk.Button(buttons, text="Reload from file", command=self._reload).pack(
             side="left", padx=(8, 0)
         )
-        ttk.Button(buttons, text="Close", command=self.close).pack(side="right")
+        ttk.Button(buttons, text="Close", style="Accent.TButton", command=self.close).pack(
+            side="right"
+        )
 
         self._applying = False
+        self.visible = True
         root.after(500, self._poll_external)
+
+    @staticmethod
+    def _style(root: tk.Tk):
+        """Flat, light theme with one accent colour, on top of clam."""
+        style = ttk.Style(root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        from tkinter import font as tkfont  # noqa: PLC0415  (needs a root first)
+
+        base = tkfont.nametofont("TkDefaultFont")
+        base.configure(size=10)
+        family = base.actual("family")
+        style.configure(".", background=BG, foreground=TEXT)
+        style.configure("TFrame", background=BG)
+        style.configure("TLabel", background=BG, foreground=TEXT)
+        style.configure("Title.TLabel", font=(family, 14, "bold"))
+        style.configure("Sub.TLabel", foreground=SUBTEXT)
+        style.configure("Card.TLabel", background=CARD)
+        style.configure(
+            "Card.TLabelframe", background=CARD, relief="solid",
+            borderwidth=1, bordercolor=BORDER,
+        )
+        style.configure(
+            "Card.TLabelframe.Label", background=BG, foreground=ACCENT,
+            font=(family, 10, "bold"),
+        )
+        style.configure("Card.TFrame", background=CARD)
+        style.configure("Card.TCheckbutton", background=CARD)
+        style.map("Card.TCheckbutton", background=[("active", CARD)])
+        style.configure(
+            "TEntry", fieldbackground=FIELD, bordercolor=BORDER,
+            lightcolor=BORDER, darkcolor=BORDER, padding=3,
+        )
+        style.configure(
+            "Horizontal.TScale", troughcolor=BORDER, background=CARD,
+            lightcolor=CARD, darkcolor=CARD,
+        )
+        style.configure(
+            "TButton", padding=(14, 7), background="#e2e7ef", bordercolor=BORDER,
+            lightcolor="#e2e7ef", darkcolor="#e2e7ef", focusthickness=0,
+        )
+        style.map("TButton", background=[("active", "#d3dae6"), ("pressed", "#c6cedd")])
+        style.configure(
+            "Accent.TButton", background=ACCENT, foreground="#ffffff",
+            bordercolor=ACCENT, lightcolor=ACCENT, darkcolor=ACCENT,
+        )
+        style.map(
+            "Accent.TButton",
+            background=[("active", ACCENT_DARK), ("pressed", ACCENT_DARK)],
+        )
 
     def _add_row(self, parent: ttk.LabelFrame, s: fitconfig.Setting, value):
         row = parent.grid_size()[1]
-        label = ttk.Label(parent, text=s.label)
+        label = ttk.Label(parent, text=s.label, style="Card.TLabel")
         label.grid(row=row, column=0, sticky="w", pady=3)
 
         if s.kind == "bool":
             var = tk.BooleanVar(value=bool(value))
-            widget = ttk.Checkbutton(parent, variable=var, command=self._apply)
+            widget = ttk.Checkbutton(
+                parent, variable=var, command=self._apply, style="Card.TCheckbutton"
+            )
             widget.grid(row=row, column=1, sticky="w", padx=(10, 0))
         else:
             is_int = s.kind == "int"
             var = tk.StringVar(value=str(int(value) if is_int else round(float(value), 4)))
-            holder = ttk.Frame(parent)
+            holder = ttk.Frame(parent, style="Card.TFrame")
             holder.grid(row=row, column=1, sticky="ew", padx=(10, 0))
             holder.columnconfigure(0, weight=1)
             if s.hi - s.lo <= SLIDER_SPAN:
@@ -227,9 +312,11 @@ class SettingsWindow:
         self._show(fitconfig.active())
         self._root.deiconify()
         self._root.lift()
+        self.visible = True
 
     def close(self):
         """Hide, do not destroy - see the module docstring."""
+        self.visible = False
         if self._root is not None:
             try:
                 self._root.after(0, self._root.withdraw)
@@ -239,6 +326,7 @@ class SettingsWindow:
     def destroy(self):
         """Tear the root down for good.  Only used by the tests."""
         self.alive = False
+        self.visible = False
         if self._root is not None:
             root, self._root = self._root, None
             try:

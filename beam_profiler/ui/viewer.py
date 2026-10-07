@@ -72,6 +72,19 @@ class Viewer:
         self.show_rect_stats = False
         self._web_thread = None
 
+        self.toolbar = overlays.Toolbar(
+            [
+                ("fit", "Fit (f)"),
+                ("stats", "Stats (g)"),
+                ("grid", "Grid (h)"),
+                ("web", "Web (w)"),
+                ("save", "Save (s)"),
+                ("settings", "Settings (o)"),
+            ],
+            WINDOW_SIZE,
+        )
+        self._hover_button = None
+
         # WINDOW_GUI_NORMAL drops the Qt toolbar and the pixel-hover overlay,
         # which render as black/garbled boxes (OpenCV's bundled Qt has no fonts)
         gpu.warm_up()  # pay the CuPy import off the critical path
@@ -129,10 +142,22 @@ class Viewer:
             cv2.imshow(WINDOW, disp)
             if not self._handle_key(cv2.waitKeyEx(1)):
                 break
+            if not self._window_open():
+                break
             self._sleep_for_fps(time.time() - t0)
 
         self.camera.close()
         cv2.destroyAllWindows()
+
+    @staticmethod
+    def _window_open() -> bool:
+        """False once the user closes the window with the title-bar X.
+        waitKeyEx pumps the GUI events, so the check right after it sees the
+        close before the next imshow would silently recreate the window."""
+        try:
+            return cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) >= 1
+        except cv2.error:
+            return False
 
     def _detect(self, frame) -> SpotArray:
         spots = detect_spots(frame)
@@ -187,6 +212,17 @@ class Viewer:
         self._draw_rectangles(disp, view)
         if self.row_col_fitting and self.do_fitting:
             overlays.draw_row_col(disp, view, self.rows, self.columns)
+        self.toolbar.draw(
+            disp,
+            {
+                "fit": self.do_fitting,
+                "stats": self.show_stats,
+                "grid": self.row_col_fitting,
+                "web": self.web_server_enabled,
+                "settings": settings.is_open(),
+            },
+            hover=self._hover_button,
+        )
         return disp
 
     def _hud_lines(self) -> list[str]:
@@ -277,6 +313,13 @@ class Viewer:
 
     # ------------------------------ mouse --------------------------------- #
     def on_mouse(self, event, x, y, flags, _param):
+        button = self.toolbar.hit(x, y)
+        dragging = self.rect_disp is not None or self.fit_rect_disp is not None
+        self._hover_button = None if dragging else button
+        if button is not None and not dragging:
+            if event == cv2.EVENT_LBUTTONDOWN:
+                self._toolbar_click(button)
+            return
         view = self.view
         if view.contains(x, y):
             sx, sy = view.to_sensor(x, y)
@@ -320,6 +363,24 @@ class Viewer:
                 self.rect_sensor = self._finish_rect(self.rect_disp, view)
                 self.rect_disp = None
                 write_status(self)
+
+    def _toolbar_click(self, name: str):
+        if name == "fit":
+            self.do_fitting = not self.do_fitting
+        elif name == "stats":
+            self.show_stats = not self.show_stats
+        elif name == "grid":
+            self.row_col_fitting = not self.row_col_fitting
+        elif name == "web":
+            self._toggle_web_server()
+        elif name == "save":
+            self._quick_save()
+        elif name == "settings":
+            if settings.is_open():
+                settings.close_settings()
+            else:
+                settings.open_settings()
+        write_status(self)
 
     @staticmethod
     def _finish_rect(rect_disp, view: ViewTransform) -> tuple[int, int, int, int]:
