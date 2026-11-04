@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from collections import deque
 
 import numpy as np
+
+from ..cameraconfig import CameraSettings
 
 
 class AutoExposure:
@@ -36,39 +39,82 @@ class AutoExposure:
 
 class Camera:
     """Base class: subclasses implement _grab() and the ROI / ExposureTime /
-    Gain properties, and set mode, model_name, serial, W, H, pixel_size,
-    default_roi in __init__."""
+    Gain properties, and set model_name, serial, W, H in __init__ before
+    calling `apply_settings`.
+
+    Everything that is per-model rather than per-backend - pixel size, exposure
+    limits, pixel formats, I/O lines - comes from a `CameraSettings`, so adding
+    a camera is a `camera_config.yaml` edit.  `pixel_size` is still a plain
+    float attribute, falling back to `UNKNOWN_PIXEL_SIZE` when unconfigured;
+    read `pixel_size_known` before presenting a micron figure as calibrated."""
 
     mode: str
     model_name: str
     serial: str
     W: int
     H: int
-    pixel_size: float
-    default_roi: tuple
 
-    def __init__(self, mode: str = "16Bit"):
+    def __init__(self, mode: str = "16Bit", settings: CameraSettings | None = None):
         if mode not in ("8Bit", "16Bit"):
             raise ValueError(f"Invalid mode: {mode}")
         self.mode = mode
         self.auto_exposure = False
-        self.min_exposure = 20
-        self.max_exposure = 20000
         self._ae = AutoExposure()
         self.userdefined_line_available = False
         self.userdefined_line_enabled = False
+        self.apply_settings(settings or CameraSettings())
+
+    def apply_settings(self, settings: CameraSettings):
+        """Adopt a resolved settings block.  Called by __init__; safe to call
+        again to pick up an edited camera_config.yaml."""
+        self.settings = settings
+        self.pixel_size = settings.effective_pixel_size
+        self.pixel_size_known = settings.pixel_size_known
+        self.set_exposure_limits(settings.min_exposure, settings.max_exposure)
+
+    def set_exposure_limits(self, lo: float, hi: float):
+        """Define the window this camera will honour: the configured one, which
+        a driver may narrow further to what the hardware reports.  This is what
+        auto-exposure is restored to, so the narrowing is never lost."""
+        self._limits = (float(lo), float(hi))
+        self.min_exposure, self.max_exposure = self._limits
+
+    @property
+    def label(self) -> str:
+        """What to show the user: the configured label, else the model name."""
+        return self.settings.label or self.model_name
+
+    @property
+    def default_roi(self) -> tuple[int, int, int, int]:
+        """Configured start-up ROI, clamped to the sensor; full frame if unset."""
+        roi = self.settings.default_roi
+        if roi is None:
+            return (self.W, self.H, 0, 0)
+        w = max(1, min(int(roi[0]), self.W))
+        h = max(1, min(int(roi[1]), self.H))
+        return (w, h, min(int(roi[2]), self.W - w), min(int(roi[3]), self.H - h))
 
     @property
     def saturation(self) -> int:
         return 255 if self.mode == "8Bit" else 65535
 
     def AutoExposureOn(self, range: tuple[float, float] | None = None):
+        """Enable auto-exposure.  `range` narrows the configured limits; it
+        cannot widen them past what the model is configured to allow."""
         self.auto_exposure = True
         if range is not None:
-            self.min_exposure, self.max_exposure = range
+            self.min_exposure = max(self._limits[0], range[0])
+            self.max_exposure = min(self._limits[1], range[1])
+            if self.min_exposure >= self.max_exposure:  # non-overlapping request
+                logging.warning(
+                    f"auto-exposure range {range} does not overlap this camera's "
+                    f"{self._limits[0]:g}-{self._limits[1]:g} us; keeping the latter"
+                )
+                self.min_exposure, self.max_exposure = self._limits
 
     def AutoExposureOff(self):
         self.auto_exposure = False
+        self.min_exposure, self.max_exposure = self._limits  # undo any narrowing
 
     def grab_image(self) -> np.ndarray | None:
         img = self._grab()

@@ -9,11 +9,13 @@ pip install -r requirements.txt        # needs Python 3.10+
 python -m beam_profiler --sim          # verify everything works without hardware
 ```
 
-For real cameras, the Basler pylon SDK must be installed system-wide and the
-camera model must have an entry in `camera_config.yaml` (keyed by exact model
-name, e.g. `a2A5060-15umBAS`). With no camera connected, the app automatically
-falls back to the simulator. `run.sh` contains a machine-specific interpreter
-path — adjust or ignore it on other PCs.
+For real cameras the Basler pylon SDK must be installed system-wide. Any
+enumerated Basler opens whether or not it is in `camera_config.yaml`; the entry
+(keyed by exact model name, a glob, or a serial under `serials:`) only supplies
+`pixel_size` and any model quirks — `python -m beam_profiler --list-cameras`
+prints a paste-ready block for whatever is plugged in. With no camera
+connected, the app falls back to the simulator. `run.sh` contains a
+machine-specific interpreter path — adjust or ignore it on other PCs.
 
 ## Test signal / debugging without hardware
 
@@ -48,10 +50,17 @@ All code lives in the `beam_profiler/` package; `pylon_camera.py` is only a
 compatibility shim for run.sh/PyInstaller.
 
 - `cameras/` — `base.Camera` defines the interface (grab_image, ROI,
-  ExposureTime, Gain properties) plus shared PID auto-exposure;
-  `basler.py` (pypylon) and `simulated.py` implement it. `open_cameras()`
-  does discovery + sim fallback. Anything testable without hardware must not
-  import pypylon at module level.
+  ExposureTime, Gain properties) plus shared PID auto-exposure and
+  `apply_settings`; `basler.py` (pypylon) and `simulated.py` implement it.
+  `open_cameras()` does discovery + sim fallback, `probe_devices()` backs
+  `--list-cameras`. Anything testable without hardware must not import pypylon
+  at module level.
+- `cameraconfig.py` — the same idea as `fitconfig.py` for everything that
+  differs between camera models: pixel size, exposure limits, pixel formats,
+  trigger mode, I/O lines. `SETTINGS` holds each field's type and help text,
+  `resolve(model, serial)` merges `defaults:` < glob < model < serial from
+  `camera_config.yaml`, and nothing else may read that file. `docs/cameras.md`
+  is the user-facing reference.
 - `fitconfig.py` — every tunable of the fit, its range and its help text, in
   one registry. `ui/settings.py` builds the settings window from it, the HTTP
   API exposes it, and it persists to `fit_config.json`. Add a knob here and it
@@ -110,6 +119,18 @@ compatibility shim for run.sh/PyInstaller.
   spot-count threshold; otherwise `gpu_enabled`/`gpu_min_spots` decide. The
   HUD shows which path actually ran. `max_crop` above `gpu.MAX_CROP` (512)
   silently moves everything to the CPU.
+- **An unlisted camera is not an error.** `resolve()` never raises and never
+  needs the model to be configured; a missing feature (no software trigger, no
+  Line2) is a warning and the driver carries on. The one unknowable is
+  `pixel_size`: unset, it falls back to `UNKNOWN_PIXEL_SIZE` (1 µm/px, so
+  microns read as pixel counts) and `Camera.pixel_size_known` is False — check
+  that flag before presenting a micron figure as calibrated. Never substitute a
+  plausible-looking pitch for a missing one; a wrong scale is silent, a flagged
+  one is not.
+- `camera_config.yaml` is user-edited, so be forgiving: a bad value is logged
+  and skipped while the rest of the block applies, `pixel_size <= 0` counts as
+  unset, and `trigger_mode` accepts YAML's bare `off` (which parses as the
+  boolean false). `tests/test_camera_config.py` pins all of this.
 - CV changes must keep `tests/` passing — they check detection count,
   sub-pixel position error, widths, orientation and grid classification
   against synthetic ground truth.

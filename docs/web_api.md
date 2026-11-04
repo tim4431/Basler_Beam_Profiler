@@ -13,7 +13,7 @@ rectangle (`fit_rect`) are handled by separate endpoints.
 
 | Endpoint | Description |
 | --- | --- |
-| `GET /api/status` | Camera model/serial, exposure, ROI, auto-exposure and fitting flags, both rectangles |
+| `GET /api/status` | Camera model/serial/label, pixel size, exposure and its limits, ROI, auto-exposure and fitting flags, both rectangles |
 | `GET /api/rect_stats` | Pixel statistics inside the white rectangle |
 | `GET /api/fit_rect_stats` | Pixel statistics inside the green fitting rectangle |
 | `GET /api/spots` | Detected spots plus the aggregated row/column statistics |
@@ -55,7 +55,11 @@ curl http://localhost:5000/api/image -o current_image.jpg
 {
   "camera_model": "a2A5060-15umBAS",
   "camera_serial": "40615333",
+  "camera_label": "profiler head, west arm",
+  "pixel_size": 2.5e-06,
+  "pixel_size_known": true,
   "exposure_time": 2866.0,
+  "exposure_limits": [30.0, 100000.0],
   "roi": [252, 252, 2502, 1774],
   "auto_exposure": false,
   "fitting_enabled": false,

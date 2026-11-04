@@ -15,8 +15,6 @@ import numpy as np
 from ..config import (
     DATA_DIR,
     FPS_LIMIT,
-    MAX_EXPOSURE_US,
-    MIN_EXPOSURE_US,
     PAD_COLOR,
     WEB_SERVER_PORT,
     WINDOW_SIZE,
@@ -43,7 +41,7 @@ class Viewer:
         self.cameras = cameras
         self.curr_idx = 0
         self.camera = cameras[0]
-        self.roi_model = ROIModel(self.camera.W, self.camera.H)
+        self.roi_model = ROIModel(self.camera.W, self.camera.H, self.camera.default_roi)
         self.camera.ROI = self.roi_model.tuple
         self._cached_state: dict[str, dict] = {}  # per-camera, for seamless switching
 
@@ -51,7 +49,7 @@ class Viewer:
         self.do_fitting = False
         self.show_stats = False
         self.row_col_fitting = False
-        self.exposure_us = 200
+        self.exposure_us = int(self.camera.settings.default_exposure)
         self.last_mouse = (0, 0)  # sensor coords
         self.rect_disp = None  # white rectangle while dragging (display coords)
         self.rect_sensor = None
@@ -101,10 +99,15 @@ class Viewer:
     def auto_exp(self, value):
         self._auto_exp = value
         if value:
-            self.camera.AutoExposureOn(range=(MIN_EXPOSURE_US, MAX_EXPOSURE_US))
+            self.camera.AutoExposureOn()
         else:
             self.camera.AutoExposureOff()
-            self.exposure_us = int(np.clip(self.exposure_us, MIN_EXPOSURE_US, MAX_EXPOSURE_US))
+            self.exposure_us = int(np.clip(self.exposure_us, *self.exposure_limits))
+
+    @property
+    def exposure_limits(self) -> tuple[float, float]:
+        """Per-camera, from camera_config.yaml, narrowed to what pylon allows."""
+        return self.camera.min_exposure, self.camera.max_exposure
 
     @property
     def view(self) -> ViewTransform:
@@ -229,10 +232,13 @@ class Viewer:
         exposure = self.camera.ExposureTime
         exposure_txt = f"Auto = {exposure:.0f}" if self.auto_exp else f"{exposure}"
         um = self.camera.pixel_size * 1e6
+        # Without a configured pixel_size every "um" below is really a pixel
+        # count - say so rather than let it read as calibrated.
+        scale_warning = "" if self.camera.pixel_size_known else " [px size unset: um = px]"
         rect_w = (self.rect_sensor[2] - self.rect_sensor[0]) * um if self.rect_sensor else 0
         rect_h = (self.rect_sensor[3] - self.rect_sensor[1]) * um if self.rect_sensor else 0
         return [
-            f"Camera: {self.camera.model_name}, FPS: {1 / self.avg_dt:4.1f}",
+            f"Camera: {self.camera.label}{scale_warning}, FPS: {1 / self.avg_dt:4.1f}",
             f"ROI: {self.camera.ROI}  Mouse: {self.last_mouse}",
             f"Exposure: {exposure_txt} us",
             f"Rect: {self.rect_sensor}, W = {rect_w:.1f} um, H = {rect_h:.1f} um",
@@ -429,9 +435,7 @@ class Viewer:
     def _adjust_exposure(self, factor: float):
         if self.auto_exp:
             return
-        self.exposure_us = int(
-            np.clip(self.exposure_us * factor, MIN_EXPOSURE_US, MAX_EXPOSURE_US)
-        )
+        self.exposure_us = int(np.clip(self.exposure_us * factor, *self.exposure_limits))
         self.camera.ExposureTime = self.exposure_us
 
     # ------------------------------ actions ------------------------------- #
@@ -488,14 +492,19 @@ class Viewer:
             self.do_fitting = st["do_fitting"]
             self.show_stats = st["show_stats"]
         else:
-            self.roi_model = ROIModel(self.camera.W, self.camera.H)
+            self.roi_model = ROIModel(
+                self.camera.W, self.camera.H, self.camera.default_roi
+            )
             self.camera.ROI = self.roi_model.tuple
+            self.exposure_us = int(
+                np.clip(self.camera.settings.default_exposure, *self.exposure_limits)
+            )
             self.camera.ExposureTime = self.exposure_us
-            self.camera.Gain = 0
+            self.camera.Gain = self.camera.settings.default_gain
             self.auto_exp = False
             self.rect_sensor = self.fit_rect_sensor = None
             self.do_fitting = self.show_stats = False
-        logging.info("Switched to %s", self.camera.model_name)
+        logging.info("Switched to %s (%s)", self.camera.label, self.camera.serial)
 
     def _toggle_web_server(self):
         if not self.web_server_enabled:

@@ -66,20 +66,56 @@ pytest
 The tests validate the CV pipeline against synthetic images with known ground
 truth (positions, widths, orientation, grid classification).
 
-### Configuring the camera
+### Configuring and adding cameras
 
-`camera_config.yaml`
+Any Basler that pylon enumerates will open, listed in `camera_config.yaml` or
+not. The only value the application cannot discover for itself is the pixel
+size, because no Basler reports it over GenICam.
+
+To add a model, plug it in and ask what it is:
+
+```bash
+python -m beam_profiler --list-cameras        # report + a paste-ready YAML block
+python -m beam_profiler --write-camera-config # create the file from scratch
+```
+
+`--list-cameras` prints the sensor size, the pixel formats, the exposure range,
+the I/O lines and the trigger sources the camera actually has, then the
+`camera_config.yaml` entry for it with everything but the pixel size filled in:
 
 ```yaml
 cameras:
-  a2A5060-15umBAS:                     # must match the camera model name
-    default_roi: [5060, 5060, 4, 4]    # [width, height, x_pad, y_pad]
-    pixel_size: 2.5e-6                 # pixel size in meters, i.e. 2.5um
+  a2A5060-15umBAS:        # the model name, exactly as pylon reports it
+    pixel_size: 2.5e-6    # pixel pitch in metres - the only required setting
 ```
+
+Settings can also be given for a whole family, or for one physical unit:
+
+```yaml
+defaults:                 # every camera
+  max_exposure: 50000     # us
+cameras:
+  "a2A*BAS":              # a glob over the ace 2 family
+    trigger_mode: auto    # auto | software | "off"
+serials:
+  "40615333":             # one camera, by serial number
+    label: "profiler head, west arm"
+    default_roi: [2048, 2048, 1500, 1500]   # [width, height, offset_x, offset_y]
+```
+
+More specific wins, field by field. Exposure limits, gain, pixel formats,
+trigger mode and the two sync lines are all configurable this way, so an
+unusual model needs no code change — `docs/cameras.md` is the full reference,
+and `beam_profiler/cameraconfig.py` documents every setting inline.
+
+Until a `pixel_size` is set, the app still runs and warns: the HUD shows
+`[px size unset: um = px]` and `/api/status` reports
+`"pixel_size_known": false`. Everything measured in pixels is unaffected.
 
 ### Using the compiled application
 
-First clone this repo and set up `camera_config.yaml`.
+First clone this repo and set up `camera_config.yaml` (or run the executable
+once with `--write-camera-config` to generate it).
 
 Check release to download the latest version: [Releases](https://github.com/tim4431/Basler_Beam_Profiler/releases)
 

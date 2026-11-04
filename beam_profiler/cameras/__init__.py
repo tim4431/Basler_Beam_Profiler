@@ -7,7 +7,7 @@ import logging
 from .base import Camera
 from .simulated import SimulatedCamera
 
-__all__ = ["Camera", "SimulatedCamera", "open_cameras"]
+__all__ = ["Camera", "SimulatedCamera", "open_cameras", "probe_devices"]
 
 
 def open_cameras(mode: str = "16Bit", simulate: bool = False, **sim_opts) -> list[Camera]:
@@ -26,3 +26,14 @@ def open_cameras(mode: str = "16Bit", simulate: bool = False, **sim_opts) -> lis
         except ImportError:
             logging.warning("pypylon not installed - using the simulated camera.")
     return [SimulatedCamera(mode=mode, **sim_opts)]
+
+
+def probe_devices() -> list[dict]:
+    """What every connected camera reports about itself, for --list-cameras.
+    Empty when pypylon is missing or nothing is plugged in."""
+    try:
+        from .basler import list_devices
+    except ImportError:
+        logging.error("pypylon is not installed, so no cameras can be enumerated.")
+        return []
+    return list_devices()

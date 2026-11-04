@@ -13,7 +13,13 @@ def viewer_status(viewer) -> dict:
     return {
         "camera_model": viewer.camera.model_name,
         "camera_serial": viewer.camera.serial,
+        "camera_label": viewer.camera.label,
+        # False means no pixel_size is configured for this model, so every
+        # *_um figure in the API is really a pixel count - see cameraconfig.
+        "pixel_size": viewer.camera.pixel_size,
+        "pixel_size_known": viewer.camera.pixel_size_known,
         "exposure_time": viewer.camera.ExposureTime,
+        "exposure_limits": [viewer.camera.min_exposure, viewer.camera.max_exposure],
         "roi": viewer.camera.ROI,
         "auto_exposure": viewer.auto_exp,
         "fitting_enabled": viewer.do_fitting,

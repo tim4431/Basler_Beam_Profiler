@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from .. import cameraconfig
 from ..synthetic import Spot, render, spot_grid
 from .base import Camera
 
@@ -26,12 +27,16 @@ class SimulatedCamera(Camera):
         pixel_size: float = 2.5e-6,
         seed: int | None = 0,
     ):
-        super().__init__(mode)
         self.model_name = f"Simulated-{grid[0]}x{grid[1]}"
         self.serial = "SIM-0001"
         self.W, self.H = width, height
-        self.pixel_size = pixel_size
-        self.default_roi = (width, height, 0, 0)
+        # Resolved through camera_config.yaml like any real camera, so the file
+        # can be exercised without hardware; `pixel_size` is the fallback when
+        # no `Simulated*` entry configures one.
+        settings = cameraconfig.resolve(self.model_name, self.serial, warn=False)
+        if not settings.pixel_size_known:
+            settings = settings.replace(pixel_size=pixel_size)
+        super().__init__(mode, settings)
         if sigma is None:
             # beam waist (~2 sigma) defaults to 1/5 of the spot pitch
             pitch = min(width, height) / (max(grid) + 1)
@@ -40,8 +45,10 @@ class SimulatedCamera(Camera):
         self.jitter = jitter
         self._rng = np.random.default_rng(seed)
         self._roi = (width, height, 0, 0)
-        self._exposure = float(REFERENCE_EXPOSURE_US)
-        self._gain = 0.0
+        self._exposure = float(
+            np.clip(settings.default_exposure, self.min_exposure, self.max_exposure)
+        )
+        self._gain = float(settings.default_gain)
         # pre-generated readout noise, cycled per frame: cheaper than drawing
         # millions of fresh normal samples at 60 fps
         self._noise_bank = self._rng.normal(

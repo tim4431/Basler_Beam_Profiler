@@ -8,13 +8,28 @@ import numpy as np
 class ROIModel:
     """Maintain ROI as (scale, aspect, centre) -> (w, h, ox, oy) tuple."""
 
-    def __init__(self, sensor_w: int, sensor_h: int):
+    MIN_SCALE = 0.02
+
+    def __init__(self, sensor_w: int, sensor_h: int, roi: tuple | None = None):
         self.full_w = sensor_w
         self.full_h = sensor_h
         self.scale = 1.0  # fraction of sensor *width*
         self.aspect = sensor_w / sensor_h  # w / h
         self.cx = sensor_w / 2
         self.cy = sensor_h / 2
+        if roi is not None:
+            self.set_roi(roi)
+
+    def set_roi(self, roi: tuple):
+        """Adopt (w, h, offset_x, offset_y) sensor pixels as the current view -
+        used for a camera's configured `default_roi`."""
+        w, h, ox, oy = roi
+        w = max(1, min(int(w), self.full_w))
+        h = max(1, min(int(h), self.full_h))
+        self.aspect = w / h
+        self.scale = float(np.clip(w / self.full_w, self.MIN_SCALE, 1.0))
+        self.cx = ox + w / 2
+        self.cy = oy + h / 2
 
     @property
     def size(self) -> tuple[int, int]:
@@ -55,7 +70,7 @@ class ROIModel:
             self.aspect = new_aspect
 
         if new_scale is not None:
-            self.scale = float(np.clip(new_scale, 0.02, 1.0))
+            self.scale = float(np.clip(new_scale, self.MIN_SCALE, 1.0))
 
         w_new, h_new = self.size
         ox_new = sensor_x - r_x * w_new

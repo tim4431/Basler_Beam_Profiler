@@ -1,10 +1,71 @@
+# Camera settings for the Basler Beam Profiler.
+#
+# Keys under `cameras:` are matched against the camera's model name, exactly as
+# pylon reports it, and may use globs (`a2A*BAS:`).  `defaults:` applies to
+# every camera, `serials:` overrides one physical unit.  Later and more
+# specific wins, field by field:
+#
+#   defaults  <  cameras: <glob>  <  cameras: <model>  <  serials: <serial>
+#
+# A model that is not listed still works, on the defaults - only `pixel_size`
+# really has to be set, because it scales every micron reading in the app.
+#
+#   python -m beam_profiler --list-cameras        print a block for what is plugged in
+#   python -m beam_profiler --write-camera-config create this file from scratch
+#
+# Every setting, with its units and effect, is documented in
+# `beam_profiler/cameraconfig.py` (and in `docs/cameras.md`).
+
+defaults:
+  # Applied to every camera unless something more specific overrides it.
+  # min_exposure: 30          # us; also the auto-exposure floor
+  # max_exposure: 100000      # us
+  # default_exposure: 200     # us, set at start-up
+  # default_gain: 0
+  # trigger_mode: auto        # auto | software | "off"  (quote it: YAML
+                              # reads a bare `off` as the boolean false)
+  # grab_timeout_ms: 1000
+  # exposure_line: Line2      # ExposureActive output, null to disable
+  # user_output_line: Line3   # pulsed around each grab ('y'), null to disable
+
 cameras:
+  # --- ace 2 ---------------------------------------------------------------
   a2A4504-18umBAS:
-    default_roi: [4504, 4504, 4, 4]
-    pixel_size: 2.74e-6
+    pixel_size: 2.74e-6   # Sony IMX541, 4504 x 4504
   a2A5060-15umBAS:
-    default_roi: [5060, 5060, 4, 4]
-    pixel_size: 2.5e-6
+    pixel_size: 2.5e-6    # Sony IMX545, 5060 x 5060
+
+  # --- ace ------------------------------------------------------------------
   acA4024-29um:
-    default_roi: [4024, 3036, 4, 4]
-    pixel_size: 1.85e-6
+    pixel_size: 1.85e-6   # Sony IMX226, 4024 x 3036
+
+  # --- the simulated camera (python -m beam_profiler --sim) -----------------
+  # Matches Simulated-4x4, Simulated-8x8, ... so the file can be exercised
+  # without hardware.  It has no I/O lines to drive.
+  "Simulated-*":
+    pixel_size: 2.5e-6
+    exposure_line: null
+    user_output_line: null
+
+  # --- adding your own ------------------------------------------------------
+  # Only pixel_size is required.  Run --list-cameras to see which pixel
+  # formats and I/O lines your model actually offers.
+  #
+  # a2A2590-22umBAS:
+  #   pixel_size: 2.74e-6
+  #
+  # A glob for a whole family, e.g. every dart, which has no opto-isolated
+  # lines and no software trigger on some firmware:
+  #
+  # "daA*":
+  #   exposure_line: null
+  #   user_output_line: null
+  #   trigger_mode: "off"
+
+# Per-unit overrides, keyed by serial number.  Use these for anything about the
+# installation rather than the model - a label, or a sub-region of the chip to
+# open on.
+# serials:
+#   "40615333":
+#     label: "profiler head, west arm"
+#     default_roi: [2048, 2048, 1500, 1500]   # [width, height, offset_x, offset_y]
