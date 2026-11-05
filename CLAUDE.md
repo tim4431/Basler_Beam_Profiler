@@ -5,17 +5,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Setup on a new machine
 
 ```bash
-pip install -r requirements.txt        # needs Python 3.10+
-python -m beam_profiler --sim          # verify everything works without hardware
+./setup.sh --dev                       # .venv + requirements (+CuPy on NVIDIA) + desktop icon
+./run.sh --sim                         # verify everything works without hardware
 ```
+
+The project runs from `.venv/` (gitignored); use `.venv/bin/python` for tests
+and scripts. `setup.sh` takes `python3` from PATH (override with `PYTHON=`);
+without ensurepip it asks for `sudo apt install python3.X-venv`.
 
 For real cameras the Basler pylon SDK must be installed system-wide. Any
 enumerated Basler opens whether or not it is in `camera_config.yaml`; the entry
 (keyed by exact model name, a glob, or a serial under `serials:`) only supplies
 `pixel_size` and any model quirks — `python -m beam_profiler --list-cameras`
 prints a paste-ready block for whatever is plugged in. With no camera
-connected, the app falls back to the simulator. `run.sh` contains a
-machine-specific interpreter path — adjust or ignore it on other PCs.
+connected, the app falls back to the simulator. `run.sh` runs `.venv/bin/python -m beam_profiler` and,
+without a terminal (desktop icon), appends output to `data/launcher.log`.
 
 ## Test signal / debugging without hardware
 
@@ -34,7 +38,7 @@ machine-specific interpreter path — adjust or ignore it on other PCs.
 ## Commands
 
 ```bash
-python -m pytest tests/                              # run tests
+python -m pytest tests/                              # run tests (inside .venv)
 python -m pytest tests/test_processing.py -k grid    # single test
 python -m beam_profiler                              # run (hardware, sim fallback)
 ./compile                                            # local exe (needs `pip install pyinstaller`)

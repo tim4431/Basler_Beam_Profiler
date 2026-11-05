@@ -8,6 +8,14 @@ API and hardware sync outputs.
 
 ## Usage
 
+On Ubuntu, `./setup.sh` creates a `.venv`, installs the requirements (plus
+CuPy if an NVIDIA GPU is present; `--no-gpu` skips it, `--dev` adds
+pytest/pyinstaller) and adds a **Beam Profiler** icon to the desktop and app
+menu. `./run.sh` launches from the venv; started from the icon it logs to
+`data/launcher.log`. Re-run `./setup.sh` after pulling new requirements.
+
+Manually, in any environment:
+
 ```bash
 pip install -r requirements.txt
 python -m beam_profiler            # live camera (falls back to the simulator)
@@ -59,8 +67,7 @@ profile at interactive rates.
 ### Tests
 
 ```bash
-pip install pytest
-pytest
+.venv/bin/python -m pytest   # after ./setup.sh --dev (or: pip install pytest; pytest)
 ```
 
 The tests validate the CV pipeline against synthetic images with known ground

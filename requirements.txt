@@ -1,6 +1,7 @@
 opencv-python
 pypylon
 numpy
+scipy
 PyYAML
 Flask
 
