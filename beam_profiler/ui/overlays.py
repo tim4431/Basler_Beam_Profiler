@@ -625,7 +625,8 @@ def help_sections(port: int):
                 (("Drag",), "White rectangle: pixel statistics"),
                 (("Ctrl-drag",), "Green rectangle: fit only inside"),
                 (("C", "V"), "Clear white / green rectangle"),
-                (("Wheel",), "Zoom (Ctrl + wheel: aspect ratio)"),
+                (("Wheel",), "Zoom the camera ROI (Ctrl + wheel too)"),
+                (("Shift", "Wheel"), "ROI aspect ratio"),
             )),
         ),
         (

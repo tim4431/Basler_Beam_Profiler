@@ -164,6 +164,18 @@ compatibility shim for run.sh/PyInstaller.
   value written (read back once), never a node read: the HUD calls them every
   frame, and they must keep answering after an unplug so the session can save
   the state it restores on reconnect. `close()` must never raise.
+- **The wheel belongs to the ROI, not to Qt.** OpenCV's Qt viewer magnifies
+  the displayed image on every wheel event and on Ctrl +/- (overlays and all;
+  no switch to turn it off). `ui/desktop.LiveWindow` takes passive X11 grabs
+  (xcb via ctypes) on the wheel buttons and Ctrl +/-/0 for the live window and
+  feeds them to `Viewer._wheel` / `_act`; clicks and motion still go to
+  OpenCV. `desktop.prepare_qt()` (before the first cv2 window) sets
+  `QT_XCB_NO_XI2=1`: a real mouse/touchpad on XWayland also sends XInput2
+  smooth-scroll motion, which no button grab intercepts and Qt zooms on.
+  XTest on Xvfb only produces button presses, so Xvfb tests cannot show that
+  case. Off X11 the cv2 mouse callback delivers the wheel to the same
+  `_wheel`. Use xcb, not Xlib, for anything X11 here: Xlib's default error
+  handler exits the process on a stray BadWindow.
 - **One Tk root per process** (`tkhost`). Never call `tk.Tk()` elsewhere; queue
   work with `tkhost.call(fn)`, which runs `fn(root)` on the Tk thread. Make Tk
   images with `tkhost.icon()`/`dot()`: a plain `PhotoImage` garbage-collected

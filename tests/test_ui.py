@@ -616,3 +616,100 @@ def test_cards_keep_the_zoom_where_they_fit_and_shrink_where_not():
     assert 1.0 <= scale < 1.5
     scale, stacked = layout(1.0, 420, 1000)  # one narrow column: stacked
     assert stacked
+
+
+# --------------------------------------------------------------------------- #
+#  mouse wheel: the ROI zooms, the interface does not
+# --------------------------------------------------------------------------- #
+def _over_picture(v):
+    """Put the pointer in the middle of the picture, as a mouse move would."""
+    view = v.view
+    x, y = view.pad_l + view.view_w // 2, view.pad_t + view.view_h // 3
+    v.on_mouse(cv2.EVENT_MOUSEMOVE, x, y, 0, None)
+
+
+@pytest.mark.parametrize("ctrl", [False, True])
+def test_wheel_and_ctrl_wheel_zoom_the_roi_not_the_interface(viewer, ctrl):
+    _frames(viewer, 1)
+    _over_picture(viewer)
+    scale, aspect, ui = viewer.roi_model.scale, viewer.roi_model.aspect, uiconfig.scale()
+    viewer._wheel(up=True, ctrl=ctrl)
+    assert viewer.roi_model.scale < scale  # zoomed in on the camera
+    assert viewer.roi_model.aspect == pytest.approx(aspect)
+    assert uiconfig.scale() == ui  # the overlays did not grow
+    viewer._wheel(up=False, ctrl=ctrl)
+    assert viewer.roi_model.scale == pytest.approx(scale)
+
+
+def test_shift_or_horizontal_wheel_changes_the_aspect_ratio(viewer):
+    _frames(viewer, 1)
+    _over_picture(viewer)
+    scale, aspect = viewer.roi_model.scale, viewer.roi_model.aspect
+    viewer._wheel(up=True, shift=True)
+    assert viewer.roi_model.aspect == pytest.approx(aspect * 0.95)
+    viewer._wheel(up=False, horizontal=True)
+    assert viewer.roi_model.aspect == pytest.approx(aspect * 0.95 * 1.05)
+    assert viewer.roi_model.scale == pytest.approx(scale, rel=0.06)  # size kept, roughly
+
+
+def test_the_wheel_over_the_toolbar_does_nothing(viewer):
+    _frames(viewer, 1)
+    x0, y0, x1, y1 = viewer.toolbar.box
+    viewer.on_mouse(cv2.EVENT_MOUSEMOVE, (x0 + x1) // 2, (y0 + y1) // 2, 0, None)
+    scale = viewer.roi_model.scale
+    viewer._wheel(up=True)
+    assert viewer.roi_model.scale == scale
+
+
+def test_opencv_wheel_callback_takes_the_same_path(viewer):
+    """Windows (no X11 grab): the wheel comes through cv2's mouse callback,
+    with the delta in the high 16 bits and modifiers in the low ones."""
+    _frames(viewer, 1)
+    _over_picture(viewer)
+    scale, aspect = viewer.roi_model.scale, viewer.roi_model.aspect
+    x, y = viewer._mouse_xy
+    viewer.on_mouse(cv2.EVENT_MOUSEWHEEL, x, y, (120 << 16) | cv2.EVENT_FLAG_CTRLKEY, None)
+    assert viewer.roi_model.scale < scale and viewer.roi_model.aspect == pytest.approx(aspect)
+    viewer.on_mouse(cv2.EVENT_MOUSEWHEEL, x, y, (120 << 16) | cv2.EVENT_FLAG_SHIFTKEY, None)
+    assert viewer.roi_model.aspect == pytest.approx(aspect * 0.95)
+
+
+def test_grabbed_x11_events_reach_the_roi_and_ctrl_plus_the_interface(viewer, monkeypatch):
+    from beam_profiler.ui import desktop
+
+    _frames(viewer, 1)
+    _over_picture(viewer)
+    events = [("wheel", 4, desktop.CONTROL), ("key", "zoom_in", desktop.CONTROL)]
+    monkeypatch.setattr(viewer._live, "poll", lambda: events)
+    scale, ui = viewer.roi_model.scale, uiconfig.scale()
+    viewer._live_input()
+    assert viewer.roi_model.scale < scale  # Ctrl+wheel: the ROI
+    assert uiconfig.scale() > ui  # Ctrl++: the interface
+
+
+def test_x11_events_are_decoded():
+    from beam_profiler.ui import desktop
+
+    def event(kind, detail, state):
+        raw = bytearray(32)
+        raw[0], raw[1] = kind, detail
+        raw[28:30] = state.to_bytes(2, "little")
+        return bytes(raw)
+
+    keys = {21: "zoom_in"}
+    assert desktop.decode_event(event(4, 4, desktop.CONTROL), keys) == ("wheel", 4, desktop.CONTROL)
+    assert desktop.decode_event(event(4 | 0x80, 5, 0), keys) == ("wheel", 5, 0)  # sent-event bit
+    assert desktop.decode_event(event(5, 4, 0), keys) is None  # release
+    assert desktop.decode_event(event(4, 1, 0), keys) is None  # left click is not ours
+    assert desktop.decode_event(event(2, 21, desktop.CONTROL), keys) == ("key", "zoom_in", 4)
+    assert desktop.decode_event(event(2, 22, 0), keys) is None
+
+
+def test_live_window_is_harmless_without_x11(monkeypatch):
+    from beam_profiler.ui import desktop
+
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.setattr(desktop, "_xcb_lib", None)
+    live = desktop.LiveWindow("Beam Profiler")
+    assert live.attach() is True and live.poll() == [] and not live.wheel_grabbed
+    live.close()

@@ -168,13 +168,19 @@ next to the executable.
 
 The window can be resized to any shape: the picture is drawn at the window's
 real size (no blurry upscaling), the toolbar stays centred and the cards stay
-in their corners. **Interface zoom** - `+` / `-` in the live view, `0` for
-100 %, or Ctrl `+` / `-` / `0` in the Settings and Cameras windows, or the
+in their corners. **Interface zoom** - `+` / `-` (or Ctrl `+` / `-`) in the
+live view, `0` for 100 %, Ctrl `+` / `-` / `0` in the Settings and Cameras
+windows, or the
 *Interface* section of the Settings window - scales text, panels, icons and
 lines everywhere from 50 to 250 %. The zoom and the window size are remembered
 in `ui_config.json` next to the app; `--ui-scale 1.5` overrides the zoom for
 one session. On a window too small for the chosen zoom, the cards and the
 toolbar shrink just enough to fit.
+
+The mouse wheel zooms the camera ROI, never the interface. (On Linux,
+OpenCV's Qt viewer would also magnify the whole window on every scroll; the
+app takes the wheel away from it and turns off Qt's XInput2 so smooth
+scrolling cannot reach it either - see `beam_profiler/ui/desktop.py`.)
 
 Closing the window (title-bar X) quits the application, same as `Esc`.
 Pillow (in requirements.txt) draws the text; without it the overlays fall back
@@ -218,7 +224,7 @@ Every toolbar button names its shortcut when hovered, and `?` lists them all.
 - `o`: open the Settings window (spot fit: crop size, re-crop stages, adaptive weighting, GPU backend; interface zoom)
 - `w`: toggle the HTTP server (port 5000), together with the live pixel statistics of the white rectangle drawn on the canvas
 - `y`: toggle the user-defined line output (Line3) used to sync external hardware
-- `mouse wheel`: zoom in/out the canvas (`ctrl + wheel`: change aspect ratio)
+- `mouse wheel` (or `ctrl + wheel`): zoom the camera ROI in/out around the pointer; `shift + wheel`: change its aspect ratio. Only the ROI zooms - the interface stays the same size
 - `i`: show/hide the info card (ROI, cursor, rectangles, fit settings)
 - `?` or `F1`: show/hide the card listing every shortcut
 - `+` / `=` and `-`: interface zoom in / out (10 % steps, 50-250 %); `0`: back to 100 %

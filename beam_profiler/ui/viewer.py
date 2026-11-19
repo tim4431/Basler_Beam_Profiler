@@ -182,7 +182,11 @@ class Viewer:
         self._web_thread = None
 
         self.toasts: deque = deque(maxlen=4)
-        self._unclaimed_frames = 120  # see desktop.claim_window
+        # The X11 side of the live window: WM_CLASS/icon for the dock, and the
+        # mouse wheel taken away from Qt's built-in magnifier (desktop.py).
+        self._live = desktop.LiveWindow(WINDOW)
+        self._live_frames = 120  # frames to keep looking for the window
+        self._mouse_xy = None  # last pointer position, display coords
         self.show_info = True
         self.show_help = False
         self._camera_state = None
@@ -211,6 +215,7 @@ class Viewer:
         # FREERATIO: the picture fills the window instead of being letterboxed
         # by Qt, so getWindowImageRect reports the window's real shape.
         gpu.warm_up()  # pay the CuPy import off the critical path
+        desktop.prepare_qt()  # before Qt starts: see desktop.py
         cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL | cv2.WINDOW_FREERATIO)
         cv2.resizeWindow(WINDOW, *self.canvas)
         cv2.setMouseCallback(WINDOW, self.on_mouse)
@@ -343,14 +348,19 @@ class Viewer:
                 cv2.imshow(WINDOW, disp)
                 if not self._handle_key(cv2.waitKeyEx(1)):
                     break
-                if self._unclaimed_frames:  # until the window exists: give it our
-                    self._unclaimed_frames -= 1  # WM_CLASS so the dock shows our icon
-                    if desktop.claim_window(WINDOW):
-                        self._unclaimed_frames = 0
+                if self._live_frames:  # until Qt has created the window
+                    self._live_frames -= 1
+                    if self._live.attach():
+                        self._live_frames = 0
+                    elif not self._live_frames:
+                        logging.warning("live window not found on X11: dock icon and "
+                                        "wheel handling left to Qt")
+                self._live_input()
                 if not self._window_open():
                     break
                 self._sleep_for_fps(time.time() - t0)
         finally:
+            self._live.close()
             uiconfig.set_window(self.canvas)  # open at this size next time
             self.cams.close()
             cv2.destroyAllWindows()
@@ -678,6 +688,7 @@ class Viewer:
         if button != self._hover_button:
             self._hover_since = now
         self._hover_button = button
+        self._mouse_xy = (x, y)
         if on_toolbar:  # the dock swallows clicks and wheel, gaps included
             if event == cv2.EVENT_LBUTTONDOWN and button is not None:
                 self._toolbar_click(button, flags)
@@ -692,23 +703,12 @@ class Viewer:
             self.show_help = False  # a click anywhere dismisses the help card
             return
 
-        if event == cv2.EVENT_MOUSEWHEEL:
-            if self.offline:  # nothing to zoom into; the ROI is restored on reconnect
-                return
-            if ctrl:  # change aspect ratio, keeping the long edge fixed
-                if abs(self.roi_model.aspect) < 0.01:
-                    return
-                factor = 0.95 if flags > 0 else 1.05
-                self.roi_model.keep_point_fixed(
-                    *self.last_mouse, new_aspect=self.roi_model.aspect * factor
-                )
-            else:  # zoom
-                delta = 0.05 if abs(self.roi_model.scale) > 0.1 else 0.01
-                delta = -delta if flags > 0 else delta
-                self.roi_model.keep_point_fixed(
-                    *self.last_mouse, new_scale=self.roi_model.scale + delta
-                )
-            self.cams.guard(setattr, self.camera, "ROI", self.roi_model.tuple)
+        if event in (cv2.EVENT_MOUSEWHEEL, cv2.EVENT_MOUSEHWHEEL):
+            # Only where X11 could not take the wheel away from Qt (Windows,
+            # or a failed grab); otherwise it arrives through _live_input.
+            self._wheel(up=flags > 0, ctrl=bool(ctrl),
+                        shift=bool(flags & cv2.EVENT_FLAG_SHIFTKEY),
+                        horizontal=event == cv2.EVENT_MOUSEHWHEEL)
 
         elif event == cv2.EVENT_LBUTTONDOWN and view.contains(x, y):
             if ctrl:
@@ -731,6 +731,39 @@ class Viewer:
                 self.rect_sensor = self._finish_rect(self.rect_disp, view)
                 self.rect_disp = None
                 write_status(self)
+
+    def _wheel(self, up: bool, ctrl: bool = False, shift: bool = False,
+               horizontal: bool = False):
+        """Mouse wheel over the picture: zoom the camera ROI about the pointer
+        (plain or Ctrl), or with Shift / a horizontal wheel change its aspect
+        ratio.  The interface never zooms here - that is +/-/0."""
+        del ctrl  # Ctrl+wheel zooms the ROI too, like plain wheel
+        if self.offline:  # nothing to zoom into; the ROI is restored on reconnect
+            return
+        if self._mouse_xy is not None and self.toolbar.contains(*self._mouse_xy):
+            return  # the dock swallows the wheel
+        if shift or horizontal:  # aspect ratio, keeping the long edge fixed
+            if abs(self.roi_model.aspect) < 0.01:
+                return
+            factor = 0.95 if up else 1.05
+            self.roi_model.keep_point_fixed(
+                *self.last_mouse, new_aspect=self.roi_model.aspect * factor
+            )
+        else:  # zoom: up = in = a smaller ROI
+            delta = 0.05 if abs(self.roi_model.scale) > 0.1 else 0.01
+            self.roi_model.keep_point_fixed(
+                *self.last_mouse, new_scale=self.roi_model.scale + (-delta if up else delta)
+            )
+        self.cams.guard(setattr, self.camera, "ROI", self.roi_model.tuple)
+
+    def _live_input(self):
+        """Wheel and Ctrl +/-/0 events the X11 grab took from Qt's magnifier."""
+        for kind, code, state in self._live.poll():
+            if kind == "wheel":
+                self._wheel(up=code in (4, 6), ctrl=bool(state & desktop.CONTROL),
+                            shift=bool(state & desktop.SHIFT), horizontal=code in (6, 7))
+            elif kind == "key":
+                self._act(code)  # zoom_in / zoom_out / zoom_reset: the interface
 
     def _toolbar_click(self, name: str, flags: int = 0):
         shift = bool(flags & cv2.EVENT_FLAG_SHIFTKEY)

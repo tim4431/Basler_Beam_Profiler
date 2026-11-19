@@ -1,17 +1,30 @@
-"""Make the desktop recognise the app's windows as "Beam Profiler".
+"""The live view's X11 window: who it belongs to, and who gets its wheel.
 
-GNOME (and most Linux docks) group windows into apps by WM_CLASS and match it
-against the `.desktop` file - setup.sh installs `beam-profiler.desktop` with
-`StartupWMClass=beam-profiler`.  The Tk windows get that class from tkhost.
-OpenCV's bundled Qt, though, starts with an empty application name and then
-sets no WM_CLASS at all, so the live view showed up as "Unknown" with a
-generic icon.  `claim_window` sets it afterwards through Xlib (ctypes, no new
-dependency); the shell picks up the change and re-associates the window.  It
-also sets _NET_WM_ICON, for window managers and switchers that use the
-window's own icon rather than the launcher's.
+OpenCV's bundled Qt viewer misbehaves on Linux in two ways this module fixes
+from the outside, over the app's own X connection (xcb through ctypes: no new
+dependency, and unlike Xlib an X error cannot terminate the process):
 
-It is a no-op off X11 (Windows, macOS, a native Wayland session): there the
-window is matched another way or not at all, and nothing breaks.
+* **Identity.**  It starts with an empty application name and so sets no
+  WM_CLASS; GNOME's dock then shows the window as "Unknown" with a generic
+  icon.  `LiveWindow` sets WM_CLASS (matching `StartupWMClass` in the
+  `.desktop` file setup.sh installs, and the Tk windows' class) and
+  _NET_WM_ICON.
+
+* **Zoom.**  Qt magnifies the displayed image on every mouse-wheel event and
+  on Ctrl +/-, overlays and all, with no way to turn that off.  The app uses
+  the wheel to zoom the camera ROI, so each scroll zoomed twice.
+  `LiveWindow` takes passive grabs on the wheel buttons and on Ctrl +/-/0 for
+  that window, so the events come to the app instead of to Qt.  `poll()`
+  hands them to the viewer, which zooms the ROI (wheel) or the interface
+  (Ctrl +/-/0).  Clicks and motion are not grabbed and still reach OpenCV.
+  A real mouse or touchpad on XWayland also reports scrolling as XInput2
+  "smooth scroll" motion, which no button grab intercepts, and Qt zooms on
+  that too - so `prepare_qt()` turns XInput2 off for Qt before it starts
+  (QT_XCB_NO_XI2), leaving it the plain wheel-button events the grab takes.
+
+Everything here is a no-op off X11 (Windows, macOS, native Wayland): the
+Windows backend has no magnifier, and the viewer then takes the wheel from
+OpenCV's own mouse callback.
 """
 
 from __future__ import annotations
@@ -28,125 +41,312 @@ import numpy as np
 WM_INSTANCE = "beam-profiler"  # = StartupWMClass in the .desktop file
 WM_CLASS = "Beam-profiler"  # Tk's capitalisation of the same name
 
+# X protocol constants
+_ATOM_CARDINAL, _ATOM_STRING, _ATOM_WM_NAME, _ATOM_WM_CLASS = 6, 31, 39, 67
+_BUTTON_PRESS, _KEY_PRESS = 4, 2
+_EVENT_MASK_BUTTONS = 0x4 | 0x8  # ButtonPress | ButtonRelease
+_GRAB_ASYNC = 1
+_MOD_ANY = 0x8000
+SHIFT, LOCK, CONTROL, NUMLOCK = 0x1, 0x2, 0x4, 0x10
+WHEEL_BUTTONS = (4, 5, 6, 7)  # up, down, left, right
 
-class _ClassHint(ctypes.Structure):  # for XSetClassHint: we own the strings
-    _fields_ = [("res_name", ctypes.c_char_p), ("res_class", ctypes.c_char_p)]
+# Ctrl + these keysyms -> viewer action.  Qt uses Ctrl +/- for its magnifier.
+_ZOOM_KEYS = {
+    0x2B: "zoom_in", 0x3D: "zoom_in", 0xFFAB: "zoom_in",  # plus, equal, KP_Add
+    0x2D: "zoom_out", 0xFFAD: "zoom_out",  # minus, KP_Subtract
+    0x30: "zoom_reset", 0xFFB0: "zoom_reset", 0xFF9E: "zoom_reset",  # 0, KP_0, KP_Insert
+}
 
 
-class _ClassHintOut(ctypes.Structure):  # for XGetClassHint: Xlib owns them, we XFree
-    _fields_ = [("res_name", ctypes.c_void_p), ("res_class", ctypes.c_void_p)]
+def prepare_qt():
+    """Call before OpenCV opens its first window.  Qt then reads the mouse
+    through core X events only, so scrolling reaches it solely as wheel-button
+    presses - which LiveWindow grabs.  It costs Qt nothing the live view uses
+    (XInput2 adds touch, tablets and smooth scrolling)."""
+    if sys.platform.startswith("linux"):
+        os.environ.setdefault("QT_XCB_NO_XI2", "1")
 
 
-def _xlib():
+class _Cookie(ctypes.Structure):
+    _fields_ = [("sequence", ctypes.c_uint)]
+
+
+class _ScreenIter(ctypes.Structure):
+    _fields_ = [("data", ctypes.c_void_p), ("rem", ctypes.c_int), ("index", ctypes.c_int)]
+
+
+_xcb_lib = None
+
+
+def _xcb():
+    """libxcb with the signatures used here, or None off X11."""
+    global _xcb_lib
+    if _xcb_lib is not None:
+        return _xcb_lib or None
+    _xcb_lib = False
     if not sys.platform.startswith("linux") or not os.environ.get("DISPLAY"):
         return None
-    path = ctypes.util.find_library("X11")
+    path = ctypes.util.find_library("xcb")
     if not path:
         return None
-    x = ctypes.cdll.LoadLibrary(path)
-    x.XOpenDisplay.restype = ctypes.c_void_p
-    x.XOpenDisplay.argtypes = [ctypes.c_char_p]
-    x.XDefaultRootWindow.restype = ctypes.c_ulong
-    x.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
-    x.XQueryTree.argtypes = [
-        ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong),
-        ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)),
-        ctypes.POINTER(ctypes.c_uint),
-    ]
-    x.XFetchName.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_char_p)]
-    x.XGetClassHint.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(_ClassHintOut)]
-    x.XSetClassHint.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(_ClassHint)]
-    x.XFree.argtypes = [ctypes.c_void_p]
-    x.XFlush.argtypes = [ctypes.c_void_p]
-    x.XInternAtom.restype = ctypes.c_ulong
-    x.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
-    x.XChangeProperty.argtypes = [
-        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong,
-        ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int,
-    ]
-    x.XCloseDisplay.argtypes = [ctypes.c_void_p]
-    return x
+    lib = ctypes.cdll.LoadLibrary(path)
+    vp, u8, u16, u32, cookie = (ctypes.c_void_p, ctypes.c_uint8, ctypes.c_uint16,
+                                ctypes.c_uint32, _Cookie)
+    for name, res, args in (
+        ("xcb_connect", vp, [ctypes.c_char_p, ctypes.POINTER(ctypes.c_int)]),
+        ("xcb_connection_has_error", ctypes.c_int, [vp]),
+        ("xcb_disconnect", None, [vp]),
+        ("xcb_flush", ctypes.c_int, [vp]),
+        ("xcb_get_setup", vp, [vp]),
+        ("xcb_setup_roots_iterator", _ScreenIter, [vp]),
+        ("xcb_screen_next", None, [ctypes.POINTER(_ScreenIter)]),
+        ("xcb_query_tree", cookie, [vp, u32]),
+        ("xcb_query_tree_reply", vp, [vp, cookie, vp]),
+        ("xcb_query_tree_children", ctypes.POINTER(u32), [vp]),
+        ("xcb_query_tree_children_length", ctypes.c_int, [vp]),
+        ("xcb_intern_atom", cookie, [vp, u8, u16, ctypes.c_char_p]),
+        ("xcb_intern_atom_reply", vp, [vp, cookie, vp]),
+        ("xcb_get_property", cookie, [vp, u8, u32, u32, u32, u32, u32]),
+        ("xcb_get_property_reply", vp, [vp, cookie, vp]),
+        ("xcb_get_property_value", vp, [vp]),
+        ("xcb_get_property_value_length", ctypes.c_int, [vp]),
+        ("xcb_change_property_checked", cookie, [vp, u8, u32, u32, u32, u8, u32, vp]),
+        ("xcb_grab_button_checked", cookie, [vp, u8, u32, u16, u8, u8, u32, u32, u8, u16]),
+        ("xcb_grab_key_checked", cookie, [vp, u8, u32, u16, u8, u8, u8]),
+        ("xcb_get_keyboard_mapping", cookie, [vp, u8, u8]),
+        ("xcb_get_keyboard_mapping_reply", vp, [vp, cookie, vp]),
+        ("xcb_get_keyboard_mapping_keysyms", ctypes.POINTER(u32), [vp]),
+        ("xcb_get_keyboard_mapping_keysyms_length", ctypes.c_int, [vp]),
+        ("xcb_request_check", vp, [vp, cookie]),
+        ("xcb_poll_for_event", vp, [vp]),
+    ):
+        fn = getattr(lib, name)
+        fn.restype, fn.argtypes = res, args
+    libc = ctypes.CDLL(ctypes.util.find_library("c"))
+    libc.free.argtypes = [vp]
+    lib.free = libc.free
+    _xcb_lib = lib
+    return lib
 
 
-def claim_window(title: str) -> bool:
-    """Give the top-level window called `title` our WM_CLASS, unless it
-    already has one.  True once the window was found (whether or not it
-    needed the change), so the caller can stop asking; False if it does not
-    exist yet or this is not X11."""
-    try:
-        x = _xlib()
-        if x is None:
-            return True  # nothing to do on this platform; stop asking
-        dpy = x.XOpenDisplay(None)
-        if not dpy:
+class LiveWindow:
+    """Our own X connection to the live view's window.  Call `attach()` each
+    frame until it returns True (the window exists once Qt has shown it),
+    then `poll()` each frame for the wheel and zoom-key events it took."""
+
+    def __init__(self, title: str):
+        self.title = title.encode()
+        self.window: int | None = None
+        self.wheel_grabbed = False
+        self._keys: dict[int, str] = {}  # keycode -> action
+        self._conn = None
+        self._x = None
+        self._done = False
+
+    # ------------------------------------------------------------------ #
+    def attach(self) -> bool:
+        """True once there is nothing more to do: the window was found and
+        set up, or this is not X11.  Never raises."""
+        if self._done:
             return True
         try:
-            return _claim(x, dpy, title.encode())
-        finally:
-            x.XCloseDisplay(dpy)
-    except Exception as e:  # never let a cosmetic fix disturb the app
-        logging.debug(f"could not set WM_CLASS: {e}")
+            if self._conn is None and not self._connect():
+                self._done = True
+                return True
+            window = self._find()
+            if window is None:
+                return False
+            self.window = window
+            self._claim(window)
+            self.wheel_grabbed = self._grab_wheel(window)
+            self._grab_zoom_keys(window)
+            self._x.xcb_flush(self._conn)
+            if self.wheel_grabbed:
+                logging.info(
+                    "live window: dock identity set; mouse wheel and Ctrl +/-/0 taken "
+                    f"from Qt (XInput2 for Qt: "
+                    f"{'off' if os.environ.get('QT_XCB_NO_XI2') else 'ON - smooth scroll may still magnify'})")
+            else:
+                logging.warning("could not take the mouse wheel from the Qt viewer; "
+                                "scrolling will also magnify the window")
+        except Exception as e:  # a cosmetic fix must never disturb the app
+            logging.debug(f"live window setup failed: {e}")
+        self._done = True
         return True
 
+    def poll(self) -> list[tuple[str, int | str, int]]:
+        """Events taken from Qt since the last call: ("wheel", button, state)
+        with button 4-7 = up/down/left/right, or ("key", action, state)."""
+        if self._conn is None or not self.window:
+            return []
+        out = []
+        x = self._x
+        try:
+            if x.xcb_connection_has_error(self._conn):
+                self.close()
+                return []
+            while True:
+                ev = x.xcb_poll_for_event(self._conn)
+                if not ev:
+                    break
+                raw = ctypes.string_at(ev, 32)
+                x.free(ev)
+                decoded = decode_event(raw, self._keys)
+                if decoded is not None:
+                    out.append(decoded)
+        except Exception as e:
+            logging.debug(f"live window poll failed: {e}")
+        return out
 
-def _claim(x, dpy, title: bytes) -> bool:
-    root = x.XDefaultRootWindow(dpy)
-    root_ret, parent = ctypes.c_ulong(), ctypes.c_ulong()
-    children, count = ctypes.POINTER(ctypes.c_ulong)(), ctypes.c_uint()
-    if not x.XQueryTree(dpy, root, ctypes.byref(root_ret), ctypes.byref(parent),
-                        ctypes.byref(children), ctypes.byref(count)):
-        return False
-    try:
-        for i in range(count.value):
-            window = children[i]
-            # a window manager reparents clients into frames: look one level down too
-            for candidate in (window, *_children(x, dpy, window)):
-                if _name(x, dpy, candidate) != title:
+    def close(self):
+        if self._conn is not None:
+            try:
+                self._x.xcb_disconnect(self._conn)
+            except Exception:
+                pass
+            self._conn = None
+
+    # ------------------------------------------------------------------ #
+    def _connect(self) -> bool:
+        self._x = _xcb()
+        if self._x is None:
+            return False
+        screen = ctypes.c_int(0)
+        conn = self._x.xcb_connect(None, ctypes.byref(screen))
+        if not conn or self._x.xcb_connection_has_error(conn):
+            if conn:
+                self._x.xcb_disconnect(conn)
+            return False
+        self._conn = conn
+        it = self._x.xcb_setup_roots_iterator(self._x.xcb_get_setup(conn))
+        for _ in range(screen.value):
+            self._x.xcb_screen_next(ctypes.byref(it))
+        self._root = ctypes.cast(it.data, ctypes.POINTER(ctypes.c_uint32))[0]
+        self._atoms = {name: self._atom(name) for name in
+                       (b"_NET_WM_NAME", b"_NET_WM_PID", b"_NET_WM_ICON")}
+        return True
+
+    def _atom(self, name: bytes) -> int:
+        x = self._x
+        reply = x.xcb_intern_atom_reply(self._conn, x.xcb_intern_atom(self._conn, 0, len(name), name), None)
+        if not reply:
+            return 0
+        atom = ctypes.cast(reply, ctypes.POINTER(ctypes.c_uint32))[2]  # after type/pad/seq/length
+        x.free(reply)
+        return atom
+
+    def _children(self, window: int) -> list[int]:
+        x = self._x
+        reply = x.xcb_query_tree_reply(self._conn, x.xcb_query_tree(self._conn, window), None)
+        if not reply:
+            return []
+        try:
+            ptr = x.xcb_query_tree_children(reply)
+            return [ptr[i] for i in range(x.xcb_query_tree_children_length(reply))]
+        finally:
+            x.free(reply)
+
+    def _property(self, window: int, prop: int, length: int = 256) -> bytes | None:
+        if not prop:
+            return None
+        x = self._x
+        cookie = x.xcb_get_property(self._conn, 0, window, prop, 0, 0, length)  # type: any
+        reply = x.xcb_get_property_reply(self._conn, cookie, None)
+        if not reply:
+            return None
+        try:
+            n = x.xcb_get_property_value_length(reply)  # bytes
+            return ctypes.string_at(x.xcb_get_property_value(reply), n) if n else b""
+        finally:
+            x.free(reply)
+
+    def _find(self) -> int | None:
+        """Our process's top-level window called `title`.  A window manager
+        reparents clients into frames, so look one level below the root's
+        children too."""
+        for top in self._children(self._root):
+            for window in (top, *self._children(top)):
+                name = (self._property(window, self._atoms[b"_NET_WM_NAME"])
+                        or self._property(window, _ATOM_WM_NAME))
+                if name != self.title:
                     continue
-                current = _ClassHintOut()
-                if x.XGetClassHint(dpy, candidate, ctypes.byref(current)):
-                    has_class = bool(current.res_class and ctypes.string_at(current.res_class))
-                    for ptr in (current.res_name, current.res_class):
-                        if ptr:
-                            x.XFree(ptr)
-                    if has_class:
-                        return True  # someone set one already; leave it alone
-                hint = _ClassHint(WM_INSTANCE.encode(), WM_CLASS.encode())
-                x.XSetClassHint(dpy, candidate, ctypes.byref(hint))
-                _set_icon(x, dpy, candidate)
-                x.XFlush(dpy)
-                return True
-        return False
-    finally:
-        if children:
-            x.XFree(children)
-
-
-def _children(x, dpy, window) -> list[int]:
-    root_ret, parent = ctypes.c_ulong(), ctypes.c_ulong()
-    children, count = ctypes.POINTER(ctypes.c_ulong)(), ctypes.c_uint()
-    if not x.XQueryTree(dpy, window, ctypes.byref(root_ret), ctypes.byref(parent),
-                        ctypes.byref(children), ctypes.byref(count)):
-        return []
-    try:
-        return [children[i] for i in range(count.value)]
-    finally:
-        if children:
-            x.XFree(children)
-
-
-def _name(x, dpy, window) -> bytes | None:
-    name = ctypes.c_char_p()
-    if not x.XFetchName(dpy, window, ctypes.byref(name)) or not name.value:
+                pid = self._property(window, self._atoms[b"_NET_WM_PID"], 1)
+                if pid and len(pid) >= 4 and int.from_bytes(pid[:4], sys.byteorder) != os.getpid():
+                    continue  # another instance's window
+                return window
         return None
-    value = name.value
-    x.XFree(ctypes.cast(name, ctypes.c_void_p))
-    return value
+
+    def _check(self, cookie) -> bool:
+        err = self._x.xcb_request_check(self._conn, cookie)
+        if err:
+            self._x.free(err)
+            return False
+        return True
+
+    def _claim(self, window: int):
+        current = self._property(window, _ATOM_WM_CLASS) or b""
+        if current.split(b"\0")[1:2] not in ([b""], []):
+            return  # someone gave it a class already; leave it alone
+        value = f"{WM_INSTANCE}\0{WM_CLASS}\0".encode()
+        self._check(self._x.xcb_change_property_checked(
+            self._conn, 0, window, _ATOM_WM_CLASS, _ATOM_STRING, 8, len(value), value))
+        icon = icon_cardinals()
+        if icon is not None and self._atoms[b"_NET_WM_ICON"]:
+            self._check(self._x.xcb_change_property_checked(
+                self._conn, 0, window, self._atoms[b"_NET_WM_ICON"], _ATOM_CARDINAL, 32,
+                len(icon), icon.ctypes.data_as(ctypes.c_void_p)))
+
+    def _grab_wheel(self, window: int) -> bool:
+        x = self._x
+        return all([  # a list, not a generator: try every button even if one fails
+            self._check(x.xcb_grab_button_checked(
+                self._conn, 0, window, _EVENT_MASK_BUTTONS, _GRAB_ASYNC, _GRAB_ASYNC,
+                0, 0, button, _MOD_ANY))
+            for button in WHEEL_BUTTONS
+        ])
+
+    def _grab_zoom_keys(self, window: int):
+        x = self._x
+        setup = ctypes.string_at(x.xcb_get_setup(self._conn), 36)
+        first, last = setup[34], setup[35]  # min_keycode, max_keycode
+        reply = x.xcb_get_keyboard_mapping_reply(
+            self._conn, x.xcb_get_keyboard_mapping(self._conn, first, last - first + 1), None)
+        if not reply:
+            return
+        try:
+            per_code = ctypes.string_at(reply, 2)[1]  # keysyms_per_keycode
+            syms = x.xcb_get_keyboard_mapping_keysyms(reply)
+            n = x.xcb_get_keyboard_mapping_keysyms_length(reply)
+            for i in range(n):
+                action = _ZOOM_KEYS.get(syms[i])
+                if action and per_code:
+                    self._keys.setdefault(first + i // per_code, action)
+        finally:
+            x.free(reply)
+        # Ctrl, whatever the state of Shift, Caps Lock and Num Lock
+        mods = [CONTROL | s | c | n for s in (0, SHIFT) for c in (0, LOCK) for n in (0, NUMLOCK)]
+        for keycode in self._keys:
+            for mod in mods:
+                self._check(x.xcb_grab_key_checked(
+                    self._conn, 0, window, mod, keycode, _GRAB_ASYNC, _GRAB_ASYNC))
 
 
-def _icon_cardinals() -> np.ndarray | None:
-    """_NET_WM_ICON payload: for each size, width, height, then ARGB pixels -
-    each as a C long, which is what Xlib wants for 32-bit properties."""
+def decode_event(raw: bytes, keys: dict[int, str]) -> tuple[str, int | str, int] | None:
+    """One 32-byte X event -> ("wheel", button, state) / ("key", action, state),
+    or None for anything else (releases, mapping changes)."""
+    kind = raw[0] & 0x7F
+    detail = raw[1]
+    state = int.from_bytes(raw[28:30], "little")
+    if kind == _BUTTON_PRESS and detail in WHEEL_BUTTONS:
+        return ("wheel", detail, state)
+    if kind == _KEY_PRESS and detail in keys:
+        return ("key", keys[detail], state)
+    return None
+
+
+def icon_cardinals() -> np.ndarray | None:
+    """_NET_WM_ICON payload as uint32 (xcb's format-32 unit): for each size,
+    width, height, then ARGB pixels."""
     import cv2
 
     from . import appicon
@@ -157,22 +357,10 @@ def _icon_cardinals() -> np.ndarray | None:
         bgra = cv2.imdecode(png, cv2.IMREAD_UNCHANGED)
         if bgra is None or bgra.ndim != 3 or bgra.shape[2] != 4:
             continue
-        b, g, r, a = (bgra[..., i].astype(np.uint64) for i in range(4))
-        argb = (a << 24) | (r << 16) | (g << 8) | b
-        parts += [np.array([bgra.shape[1], bgra.shape[0]], np.uint64), argb.ravel()]
-    if not parts:
-        return None
-    return np.ascontiguousarray(np.concatenate(parts), dtype=np.dtype(f"u{ctypes.sizeof(ctypes.c_ulong)}"))
-
-
-def _set_icon(x, dpy, window):
-    data = _icon_cardinals()
-    if data is None:
-        return
-    net_wm_icon = x.XInternAtom(dpy, b"_NET_WM_ICON", 0)
-    cardinal = x.XInternAtom(dpy, b"CARDINAL", 0)
-    x.XChangeProperty(dpy, window, net_wm_icon, cardinal, 32, 0,  # PropModeReplace
-                      data.ctypes.data_as(ctypes.c_void_p), len(data))
+        b, g, r, a = (bgra[..., i].astype(np.uint32) for i in range(4))
+        parts += [np.array([bgra.shape[1], bgra.shape[0]], np.uint32),
+                  ((a << 24) | (r << 16) | (g << 8) | b).ravel()]
+    return np.ascontiguousarray(np.concatenate(parts)) if parts else None
 
 
 def screen_size() -> tuple[int, int] | None:
@@ -190,9 +378,15 @@ def screen_size() -> tuple[int, int] | None:
             if user32.SystemParametersInfoW(0x30, 0, ctypes.byref(area), 0):  # SPI_GETWORKAREA
                 return area.right - area.left, area.bottom - area.top
             return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
-        x = _xlib()
-        if x is None:
+        if not sys.platform.startswith("linux") or not os.environ.get("DISPLAY"):
             return None
+        path = ctypes.util.find_library("X11")
+        if not path:
+            return None
+        x = ctypes.cdll.LoadLibrary(path)
+        x.XOpenDisplay.restype = ctypes.c_void_p
+        x.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        x.XCloseDisplay.argtypes = [ctypes.c_void_p]
         x.XDefaultScreen.argtypes = [ctypes.c_void_p]
         x.XDisplayWidth.argtypes = x.XDisplayHeight.argtypes = [ctypes.c_void_p, ctypes.c_int]
         dpy = x.XOpenDisplay(None)
