@@ -88,17 +88,24 @@ compatibility shim for run.sh/PyInstaller.
   source used by both UI and HTTP server).
 - `ui/viewer.py` — main loop (`step()`: service camera events → grab →
   process → draw, then keys); owns all mutable state, which `server.py` (Flask,
-  daemon thread) and `status.py` read. `ui/overlays.py` draws HUD/stats/spots,
-  the disconnect banner and toasts. `ui/settings.py` and `ui/cameras_window.py`
-  are Tk Toplevels on the single Tk thread in `ui/tkhost.py`.
+  daemon thread) and `status.py` read. `ui/overlays.py` draws the status bar,
+  info/statistics cards, icon toolbar + tooltips, spots, grid lines, the
+  disconnect banner and toasts, all through `ui/gfx.py` (text, panels, sprite
+  caches) and `ui/icons.py` (procedural icons, also used by Tk). `ui/theme.py`
+  is the one palette for overlays and Tk. `ui/settings.py` and
+  `ui/cameras_window.py` are Tk Toplevels on the single Tk thread in
+  `ui/tkhost.py`. Toolbar buttons and keys both go through `Viewer._act`.
 
 ### Conventions that bite
 
 - **Three coordinate systems**: *sensor* coords (full chip; rectangles are
   stored in these), *ROI* coords (grabbed frame; spot fits are in these;
-  sensor = ROI + offset), and *display* coords (1100 px window;
+  sensor = ROI + offset), and *display* coords (the window's real image
+  size, `Viewer.canvas`, followed every frame - any w x h, not a fixed square;
   `roi.ViewTransform` maps between them). All overlay drawing happens in
-  display space so text/lines don't scale with zoom.
+  display space so text/lines don't scale with zoom. The canvas only changes
+  right before a frame is composed (`_follow_window` → `step` → `_layout`), so
+  mouse events always map through the view and toolbar of the image on screen.
 - Reported `sigma_0/sigma_1` are **2×** the Gaussian σ (≈ beam waist per
   axis); tests encode this (`sigma_0 ≈ 2 * true_sigma`).
 - "16Bit" mode is Mono12 wrapped MSB-aligned in uint16 (saturation 65535).
@@ -158,7 +165,34 @@ compatibility shim for run.sh/PyInstaller.
   frame, and they must keep answering after an unplug so the session can save
   the state it restores on reconnect. `close()` must never raise.
 - **One Tk root per process** (`tkhost`). Never call `tk.Tk()` elsewhere; queue
-  work with `tkhost.call(fn)`, which runs `fn(root)` on the Tk thread.
+  work with `tkhost.call(fn)`, which runs `fn(root)` on the Tk thread. Make Tk
+  images with `tkhost.icon()`/`dot()`: a plain `PhotoImage` garbage-collected
+  by the main thread at exit calls into Tcl and hangs the shutdown.
+- **Overlays blend cached sprites; they do not draw text per frame.** Text,
+  icons, chips, the toolbar and cards are rendered once into `gfx.SpriteCache`s
+  keyed by their full content (text, colour, state) - a change is a new key, so
+  nothing is ever invalidated by hand, and the LRU bound caps memory. Put every
+  input of a rendering into its key. Numbers that change every frame go through
+  `Viewer._readout` / the spot-label memo (`overlays.READOUT_PERIOD`) so they
+  re-render a few times a second, not 60. Per-spot graphics must stay batched
+  (one `cv2.polylines` per colour, never a loop of cv2 calls per spot) - an
+  80x80 array is 6400 spots. Panels use `gfx.panel`/`gfx.shade` (addWeighted
+  on a solid image), which beat a full-sprite blend by ~5x.
+- **All UI sizes go through the scale; no raw pixel constants.** The UI zoom
+  (`uiconfig.scale()`, 50-250 %, persisted in ui_config.json) sizes every
+  overlay through an `overlays.Metrics` (`m.px(40)`, `m.font(13)`, `m.stroke`)
+  and every Tk size through `tkhost.S()`. A cached rendering must have the
+  scale (or the scaled font/size) in its key, so a zoom re-renders text and
+  icons rather than resampling them. Widgets that would not fit the window at
+  the chosen zoom (toolbar, cards, help card, banner) shrink to fit
+  (`overlays._fit_scale`, `fit_cards`); nothing else may override the scale.
+  Tk windows rebuild on a zoom (`rescale`, via `tkhost.on_rescale`): register
+  new windows there, and keep their `class_=desktop.WM_CLASS`.
+  `uiconfig` is not a fit parameter - never put it in `fitconfig.SETTINGS`.
+- **Pillow is optional at runtime.** `gfx` falls back to Hershey text behind the
+  same `Font` interface (`gfx.use_pillow(False)` forces it; tests run both).
+  Icons are drawn with cv2, never from files - the one-file exe ships no assets.
+  Non-ASCII characters (µ, σ, ×) are substituted when the font lacks them.
 - **Nothing a camera does may end the loop.** `Viewer.run` catches per-frame
   exceptions (logged once per 10 s, shown as a toast); only Esc/close quits.
   Basler timeouts are not disconnects — `IsCameraDeviceRemoved()` decides;

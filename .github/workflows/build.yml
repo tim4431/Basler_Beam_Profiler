@@ -28,7 +28,7 @@ jobs:
 
     - name: Build executable with PyInstaller
       run: |
-        pyinstaller --onefile pylon_camera.py
+        pyinstaller --onefile --icon docs/icon.ico pylon_camera.py
 
     - name: Upload executable artifact
       uses: actions/upload-artifact@v4

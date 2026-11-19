@@ -44,7 +44,7 @@ CONFIG_NAME = "camera_config.yaml"
 # Stand-in scale when a model has no `pixel_size`: 1 um/px makes every micron
 # reading numerically equal to the pixel count, so an uncalibrated number is
 # obvious rather than plausible.  `Camera.pixel_size_known` is False and the
-# HUD says so.
+# status bar says so.
 UNKNOWN_PIXEL_SIZE = 1.0e-6
 
 TRIGGER_MODES = ("auto", "software", "off")
@@ -107,7 +107,7 @@ SETTINGS: tuple[Setting, ...] = (
         "cannot be guessed and is not readable from the camera - take it from the\n"
         "model's datasheet.  Every micron figure in the app scales with it.\n"
         "Left out, the app still runs but reports microns == pixels and says\n"
-        "'px size unset' on the HUD.",
+        "'pixel size unset' in the status bar.",
     ),
     Setting(
         "default_roi", "roi",

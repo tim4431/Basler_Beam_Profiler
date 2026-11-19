@@ -13,3 +13,5 @@ test_images/*.npy
 .pytest_cache/
 # per-machine spot-fitting settings, written by the settings window
 fit_config.json
+# per-machine interface zoom and window size, written by the viewer
+ui_config.json

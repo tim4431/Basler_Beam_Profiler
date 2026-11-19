@@ -1,4 +1,4 @@
 #!/bin/sh
 # Local exe build; CI (.github/workflows/build.yml) runs the same command.
 # Requires: pip install pyinstaller
-pyinstaller --onefile pylon_camera.py
+pyinstaller --onefile --icon docs/icon.ico pylon_camera.py

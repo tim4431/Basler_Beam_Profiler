@@ -55,6 +55,11 @@ def main(argv=None):
         "--sim-sigma", type=float, default=None,
         help="spot sigma in px (default: pitch/10, i.e. waist = pitch/5)",
     )
+    parser.add_argument(
+        "--ui-scale", type=float, default=None, metavar="FACTOR",
+        help="interface zoom for this session, e.g. 1.5 (0.5-2.5; default: the last "
+             "one used, saved in ui_config.json; +/- and 0 change it while running)",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -82,6 +87,17 @@ def main(argv=None):
             logging.info(f"camera backend {status['title']}: ready")
         else:
             logging.info(f"camera backend {status['title']}: off ({status['detail']})")
+
+    if args.ui_scale is not None:
+        from . import uiconfig
+
+        try:
+            scale = uiconfig.set_scale(args.ui_scale, save=False)  # this session only
+        except ValueError:
+            parser.error(f"--ui-scale: not a number: {args.ui_scale}")
+        if abs(scale - args.ui_scale) > 1e-6:
+            logging.warning(f"--ui-scale {args.ui_scale} is outside "
+                            f"{uiconfig.MIN_SCALE}-{uiconfig.MAX_SCALE}; using {scale}")
 
     from .ui import Viewer
 

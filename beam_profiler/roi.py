@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 
@@ -80,16 +82,19 @@ class ROIModel:
 
 
 class ViewTransform:
-    """Maps the current ROI into a square window (letterboxed with padding)."""
+    """Maps the current ROI into the window, as large as fits with the aspect
+    kept and the rest padded.  `window` is (width, height), or one int for a
+    square window."""
 
-    def __init__(self, roi: tuple[int, int, int, int], window: int):
+    def __init__(self, roi: tuple[int, int, int, int], window):
         self.w, self.h, self.ox, self.oy = roi
-        self.window = window
-        self.scale = window / max(self.w, self.h)
-        self.view_w = int(self.w * self.scale)
-        self.view_h = int(self.h * self.scale)
-        self.pad_l = (window - self.view_w) // 2
-        self.pad_t = (window - self.view_h) // 2
+        win_w, win_h = (window, window) if np.isscalar(window) else window
+        self.win_w, self.win_h = int(win_w), int(win_h)
+        self.scale = min(self.win_w / self.w, self.win_h / self.h)
+        self.view_w = min(self.win_w, max(1, int(round(self.w * self.scale))))
+        self.view_h = min(self.win_h, max(1, int(round(self.h * self.scale))))
+        self.pad_l = (self.win_w - self.view_w) // 2
+        self.pad_t = (self.win_h - self.view_h) // 2
 
     def contains(self, disp_x: int, disp_y: int) -> bool:
         return (self.pad_l <= disp_x < self.pad_l + self.view_w) and (
@@ -103,9 +108,11 @@ class ViewTransform:
         )
 
     def to_display(self, sensor_x: float, sensor_y: float) -> tuple[int, int]:
+        # floor, with a hair of slack: (d - pad) / scale * scale must come back
+        # as d, not d - 1, through float rounding
         return (
-            int((sensor_x - self.ox) * self.scale) + self.pad_l,
-            int((sensor_y - self.oy) * self.scale) + self.pad_t,
+            math.floor((sensor_x - self.ox) * self.scale + 1e-6) + self.pad_l,
+            math.floor((sensor_y - self.oy) * self.scale + 1e-6) + self.pad_t,
         )
 
     def roi_to_display(self, x: float, y: float) -> tuple[int, int]:

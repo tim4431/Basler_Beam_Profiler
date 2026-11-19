@@ -70,7 +70,8 @@ WARNING camera model 'a2A2590-22umBAS' is not in camera_config.yaml ...
 WARNING no pixel_size for 'a2A2590-22umBAS': micron readings will equal pixel counts.
 ```
 
-and the HUD reads `Camera: a2A2590-22umBAS [px size unset: um = px]`. Pixel
+and the status bar shows an amber *pixel size unset: µm = px* chip next to the
+camera name. Pixel
 counts, fits, widths and the grid statistics are all still correct — only the
 conversion to microns is a placeholder of 1 µm/px, and `/api/status` reports
 `"pixel_size_known": false` so scripts can refuse to trust `*_um` fields.

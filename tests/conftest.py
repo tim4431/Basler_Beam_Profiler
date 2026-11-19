@@ -8,7 +8,7 @@ otherwise change what the simulated camera reports.
 
 import pytest
 
-from beam_profiler import cameraconfig, fitconfig
+from beam_profiler import cameraconfig, fitconfig, uiconfig
 
 
 @pytest.fixture(autouse=True)
@@ -19,6 +19,20 @@ def isolated_fit_config(tmp_path_factory, monkeypatch):
     fitconfig.set_active(fitconfig.FitConfig(), save=False)
     yield
     fitconfig.set_active(fitconfig.FitConfig(), save=False)
+
+
+@pytest.fixture(autouse=True)
+def isolated_ui_config(tmp_path_factory, monkeypatch):
+    """Default zoom and window size, saved only to a temp file; and no real
+    screen to size the window against, so every machine composes 1100 x 1100."""
+    path = tmp_path_factory.mktemp("uicfg") / "ui_config.json"
+    monkeypatch.setattr(uiconfig, "CONFIG_PATH", str(path))
+    uiconfig.use(uiconfig.UIConfig())
+    from beam_profiler.ui import desktop
+
+    monkeypatch.setattr(desktop, "screen_size", lambda: None)
+    yield
+    uiconfig.use(uiconfig.UIConfig())
 
 
 @pytest.fixture(autouse=True)

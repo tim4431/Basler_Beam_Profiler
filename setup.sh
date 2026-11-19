@@ -5,6 +5,7 @@
 #   ./setup.sh            # venv + deps (+ CuPy if an NVIDIA GPU is found) + launcher
 #   ./setup.sh --no-gpu   # skip CuPy
 #   ./setup.sh --dev      # also install pytest/pyinstaller
+#   ./setup.sh --launcher # only (re)install the desktop/app-menu launcher
 #   PYTHON=python3.12 ./setup.sh   # pick the interpreter (needs 3.10+)
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
@@ -12,15 +13,54 @@ ROOT="$PWD"
 PY="${PYTHON:-python3}"
 GPU=auto
 DEV=0
+LAUNCHER_ONLY=0
 for arg in "$@"; do
     case "$arg" in
         --no-gpu) GPU=0 ;;
         --gpu)    GPU=1 ;;
         --dev)    DEV=1 ;;
-        -h|--help) sed -n 2,9p "$0"; exit 0 ;;
+        --launcher) LAUNCHER_ONLY=1 ;;
+        -h|--help) sed -n 2,10p "$0"; exit 0 ;;
         *) echo "unknown option: $arg" >&2; exit 2 ;;
     esac
 done
+
+# --- desktop launcher (defined here so --launcher can run it alone) --------
+# StartupWMClass must match the WM_CLASS the app gives its windows
+# (beam_profiler/ui/desktop.py), or the dock shows them as "Unknown".
+install_launcher() {
+    chmod +x run.sh
+    local apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    local entry="beam-profiler.desktop"
+    local desktop_dir
+    desktop_dir="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
+    mkdir -p "$apps"
+    cat > "$apps/$entry" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Beam Profiler
+Comment=Live laser-beam profiling with Basler, GenICam and USB cameras
+Exec="$ROOT/run.sh"
+Path=$ROOT
+Icon=$ROOT/docs/icon.svg
+Terminal=false
+Categories=Science;Engineering;
+StartupWMClass=beam-profiler
+DESKTOP
+    chmod +x "$apps/$entry"
+    command -v update-desktop-database >/dev/null && update-desktop-database -q "$apps" || true
+    if [ -d "$desktop_dir" ]; then
+        cp "$apps/$entry" "$desktop_dir/$entry"
+        chmod +x "$desktop_dir/$entry"
+        # GNOME only launches desktop icons that are marked trusted.
+        gio set "$desktop_dir/$entry" metadata::trusted true 2>/dev/null || true
+    fi
+    echo ">> launcher installed: $apps/$entry"
+}
+if [ "$LAUNCHER_ONLY" = 1 ]; then
+    install_launcher
+    exit 0
+fi
 
 # --- interpreter ------------------------------------------------------------
 command -v "$PY" >/dev/null || { echo "error: $PY not found" >&2; exit 1; }
@@ -73,31 +113,7 @@ if [ "$DEV" = 1 ]; then
 fi
 
 # --- desktop launcher -------------------------------------------------------
-chmod +x run.sh
-APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-DESKTOP_DIR="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
-ENTRY="beam-profiler.desktop"
-mkdir -p "$APPS"
-cat > "$APPS/$ENTRY" <<EOF
-[Desktop Entry]
-Type=Application
-Name=Beam Profiler
-Comment=Live laser-beam profiling with Basler cameras
-Exec="$ROOT/run.sh"
-Path=$ROOT
-Icon=$ROOT/docs/icon.svg
-Terminal=false
-Categories=Science;Engineering;
-EOF
-chmod +x "$APPS/$ENTRY"
-command -v update-desktop-database >/dev/null && update-desktop-database -q "$APPS" || true
-
-if [ -d "$DESKTOP_DIR" ]; then
-    cp "$APPS/$ENTRY" "$DESKTOP_DIR/$ENTRY"
-    chmod +x "$DESKTOP_DIR/$ENTRY"
-    # GNOME only launches desktop icons that are marked trusted.
-    gio set "$DESKTOP_DIR/$ENTRY" metadata::trusted true 2>/dev/null || true
-fi
+install_launcher
 
 echo ">> checking the install"
 "$VPY" -c 'import cv2, numpy, scipy, yaml, flask, pypylon; print("   imports ok")'

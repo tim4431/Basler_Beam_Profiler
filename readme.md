@@ -23,6 +23,7 @@ pip install -r requirements.txt
 python -m beam_profiler            # live camera (falls back to the simulator)
 python -m beam_profiler --sim      # simulated camera, no hardware needed
 python -m beam_profiler --camera 40615333   # start on this camera (serial/label/model)
+python -m beam_profiler --ui-scale 1.5      # interface zoom for this session
 python pylon_camera.py             # legacy entry point, same application
 ```
 
@@ -60,7 +61,9 @@ beam_profiler/
 │                      basler.py, genicam.py, uvc.py, simulated.py,
 │                      manager.py (discovery, hot-plug), session.py (switch/reconnect)
 ├── processing/        blobs.py (detection + Gaussian fits), grid.py, stats.py
-├── ui/                viewer.py (main loop, input), overlays.py (HUD, bars),
+├── ui/                viewer.py (main loop, input), overlays.py (status bar, cards,
+│                      toolbar, spots), gfx.py (cached text/panel sprites),
+│                      icons.py (procedural icons), theme.py (shared palette),
 │                      cameras_window.py, settings.py, tkhost.py (shared Tk thread)
 ├── server.py          Flask HTTP API
 └── status.py          pylon_camera.json mirror
@@ -125,8 +128,8 @@ trigger mode and the two sync lines are all configurable this way, so an
 unusual model needs no code change — `docs/cameras.md` is the full reference,
 and `beam_profiler/cameraconfig.py` documents every setting inline.
 
-Until a `pixel_size` is set, the app still runs and warns: the HUD shows
-`[px size unset: um = px]` and `/api/status` reports
+Until a `pixel_size` is set, the app still runs and warns: the status bar shows
+an amber *pixel size unset: µm = px* chip and `/api/status` reports
 `"pixel_size_known": false`. Everything measured in pixels is unaffected.
 
 ### Using the compiled application
@@ -140,10 +143,42 @@ Put the `pylon_camera.exe` executable in the same directory as `camera_config.ya
 Saved frames (`data/`) and the live status file (`pylon_camera.json`) are written
 next to the executable.
 
-A toolbar along the bottom edge of the window gives mouse access to the most
-common toggles — Fit, Stats, Grid, Cameras, Web, Save and the Settings window —
-with the active ones highlighted. Closing the window (title-bar X) quits the
-application, same as `Esc`.
+### The live view
+
+- **Status bar** (top): a green/red dot for the camera on screen, its name and
+  connection, how many other cameras are plugged in, and on the right the
+  exposure (with an *AUTO* badge), the fit backend, the HTTP API and the sync
+  output when they are on, and the frame rate.
+- **Info card** (top left, `i` hides it): ROI, cursor position in sensor
+  pixels, the white and green rectangles, and the fit settings in force.
+  Below it, the white rectangle's pixel statistics while the HTTP API is on.
+- **Statistics cards** (top right, `g` / `h`): spot spacing, scatter,
+  curvature and width scatter, and the row/column figures for beam arrays.
+  Changing numbers refresh about seven times a second, so they can be read.
+- **Spots**: each fitted ellipse with its axes - red along `s0`, blue along
+  `s1` - and, when it is big enough on screen, its centre (ROI pixels) and its
+  widths `s0 × s1` in µm (2σ, see [docs/fitting.md](docs/fitting.md)).
+- **Toolbar** (bottom): icon buttons for everything on the keyboard - fit,
+  statistics, rows & columns; auto exposure and exposure −/+ (shift-click:
+  ÷10/×10); clear rectangles; Cameras window and next camera; sync output and
+  HTTP API; save (shift-click: save as); info panel, fit settings and help.
+  Active buttons are blue, buttons that would do nothing right now are dimmed,
+  and hovering one shows its name and shortcut.
+- `?` (or F1) shows every shortcut on one card.
+
+The window can be resized to any shape: the picture is drawn at the window's
+real size (no blurry upscaling), the toolbar stays centred and the cards stay
+in their corners. **Interface zoom** - `+` / `-` in the live view, `0` for
+100 %, or Ctrl `+` / `-` / `0` in the Settings and Cameras windows, or the
+*Interface* section of the Settings window - scales text, panels, icons and
+lines everywhere from 50 to 250 %. The zoom and the window size are remembered
+in `ui_config.json` next to the app; `--ui-scale 1.5` overrides the zoom for
+one session. On a window too small for the chosen zoom, the cards and the
+toolbar shrink just enough to fit.
+
+Closing the window (title-bar X) quits the application, same as `Esc`.
+Pillow (in requirements.txt) draws the text; without it the overlays fall back
+to OpenCV's built-in font.
 
 ### Cameras: switching, hot-plugging, other vendors
 
@@ -163,7 +198,10 @@ through [`harvesters`](https://github.com/genicam/harvesters) (`pip install
 webcams through OpenCV. See [docs/cameras.md](docs/cameras.md#camera-types).
 
 ### Keyboard Shortcuts
-- `Esc`: Quit the application (or close the window)
+
+Every toolbar button names its shortcut when hovered, and `?` lists them all.
+
+- `Esc`: Quit the application (or close the window); closes the help card first if it is open
 - `arrow keys`: up/down=change exposure by 10 times, left/right=change exposure by 10%
 - `a`: toggle auto-exposure (auto exposure adjusts the exposure time to keep the max intensity to be near-saturated)
 - `f`: toggle blob fitting
@@ -177,10 +215,13 @@ webcams through OpenCV. See [docs/cameras.md](docs/cameras.md#camera-types).
 - `d`: save the current frame with dialogue box, allowing the user to choose the file location and name
 - `t`: switch to the next connected camera
 - `k`: open the Cameras window (every camera found, switch with a double-click, set label and pixel size)
-- `o`: open the spot-fitting settings window (crop size, re-crop stages, adaptive weighting, GPU backend)
+- `o`: open the Settings window (spot fit: crop size, re-crop stages, adaptive weighting, GPU backend; interface zoom)
 - `w`: toggle the HTTP server (port 5000), together with the live pixel statistics of the white rectangle drawn on the canvas
 - `y`: toggle the user-defined line output (Line3) used to sync external hardware
 - `mouse wheel`: zoom in/out the canvas (`ctrl + wheel`: change aspect ratio)
+- `i`: show/hide the info card (ROI, cursor, rectangles, fit settings)
+- `?` or `F1`: show/hide the card listing every shortcut
+- `+` / `=` and `-`: interface zoom in / out (10 % steps, 50-250 %); `0`: back to 100 %
 
 ## Spot fitting settings
 

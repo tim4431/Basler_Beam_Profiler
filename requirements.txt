@@ -4,6 +4,9 @@ numpy
 scipy
 PyYAML
 Flask
+# antialiased TrueType text in the live view; without it the overlays fall
+# back to OpenCV's Hershey font and everything else works the same
+Pillow>=10.1
 
 # exe builds only (see `compile` / .github/workflows/build.yml):
 # pip install pyinstaller

@@ -1,18 +1,33 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <radialGradient id="beam" cx="50%" cy="50%" r="50%">
-      <stop offset="0" stop-color="#fff6c8"/>
-      <stop offset="0.25" stop-color="#ffb020"/>
-      <stop offset="0.6" stop-color="#d8301a" stop-opacity="0.85"/>
-      <stop offset="1" stop-color="#d8301a" stop-opacity="0"/>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#252e40"/>
+      <stop offset="1" stop-color="#0d1118"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="beam" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.16" stop-color="#fff4b8"/>
+      <stop offset="0.40" stop-color="#ffb21f"/>
+      <stop offset="0.66" stop-color="#ff4d6d" stop-opacity="0.78"/>
+      <stop offset="1" stop-color="#8b3dff" stop-opacity="0"/>
     </radialGradient>
   </defs>
-  <rect x="4" y="4" width="120" height="120" rx="24" fill="#16202c"/>
-  <g stroke="#3a4a5c" stroke-width="2">
-    <line x1="64" y1="14" x2="64" y2="114"/>
-    <line x1="14" y1="64" x2="114" y2="64"/>
+  <rect x="12" y="12" width="232" height="232" rx="58" fill="url(#tile)"/>
+  <rect x="13" y="13" width="230" height="230" rx="57" fill="none" stroke="url(#rim)" stroke-width="2.5"/>
+  <g fill="none" stroke="#71839e" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M50 88 V66 a16 16 0 0 1 16 -16 H88"/>
+    <path d="M168 50 H190 a16 16 0 0 1 16 16 V88"/>
+    <path d="M206 168 V190 a16 16 0 0 1 -16 16 H168"/>
+    <path d="M88 206 H66 a16 16 0 0 1 -16 -16 V168"/>
   </g>
-  <ellipse cx="64" cy="64" rx="38" ry="30" fill="url(#beam)"/>
-  <ellipse cx="64" cy="64" rx="26" ry="20" fill="none" stroke="#6fe3ff" stroke-width="2.5" stroke-dasharray="5 4"/>
-  <path d="M14 106 Q40 106 52 82 Q64 50 76 82 Q88 106 114 106" fill="none" stroke="#6fe3ff" stroke-width="3"/>
+  <g transform="rotate(-28 128 128)">
+    <ellipse cx="128" cy="128" rx="78" ry="58" fill="url(#beam)"/>
+    <ellipse cx="128" cy="128" rx="50" ry="35" fill="none" stroke="#4ade80" stroke-width="6.5"/>
+    <line x1="78" y1="128" x2="178" y2="128" stroke="#f87171" stroke-width="5.5" stroke-linecap="round"/>
+    <line x1="128" y1="93" x2="128" y2="163" stroke="#60a5fa" stroke-width="5.5" stroke-linecap="round"/>
+  </g>
 </svg>
