@@ -17,6 +17,9 @@ from .status import viewer_status
 
 ENDPOINTS = [
     ("GET", "/api/status", "Camera status (model, exposure, ROI, rectangles)."),
+    ("GET", "/api/cameras", "Every camera found, its state, and which one is in use."),
+    ("POST", "/api/select_camera",
+     'Switch camera. JSON: {"camera": "<serial, label, model or uid>"}.'),
     ("GET", "/api/rect_stats", "Pixel statistics of the white rectangle."),
     ("GET", "/api/fit_rect_stats", "Pixel statistics of the green fitting rectangle."),
     ("GET", "/api/spots", "Detected spots and their statistics."),
@@ -74,6 +77,28 @@ def create_app(viewer) -> Flask:
     @app.route("/api/status")
     def get_status():
         return jsonify(viewer_status(viewer))
+
+    @app.route("/api/cameras")
+    def get_cameras():
+        manager = viewer.manager
+        return jsonify(
+            {
+                "active": viewer.cams.uid,
+                "connected": viewer.cams.offline is None,
+                "cameras": manager.snapshot(),
+                "backends": manager.backend_status(),
+            }
+        )
+
+    @app.route("/api/select_camera", methods=["POST"])
+    def select_camera():
+        body = request.get_json(silent=True) or {}
+        query = str(body.get("camera") or body.get("uid") or body.get("serial") or "")
+        uid = viewer.manager.find(query) if query else None
+        if uid is None:
+            return jsonify({"error": f"no camera matches {query!r}"}), 404
+        viewer.manager.post(("switch", uid))  # carried out by the main loop
+        return jsonify({"message": "switching", "uid": uid}), 202
 
     @app.route("/api/rect_stats")
     def get_rect_stats():
@@ -161,18 +186,19 @@ def create_app(viewer) -> Flask:
             for m, path, desc in ENDPOINTS
         )
         return f"""<!DOCTYPE html>
-<html><head><title>Basler Camera Server</title><style>
+<html><head><title>Beam Profiler Server</title><style>
   body {{ font-family: Arial, sans-serif; margin: 20px; }}
   .endpoint {{ margin: 10px 0; padding: 10px; background: #f0f0f0; border-radius: 5px; }}
   .method {{ color: #007acc; font-weight: bold; }}
   pre {{ background: #f8f8f8; padding: 10px; border-radius: 3px; overflow-x: auto; }}
 </style></head><body>
-<h1>Basler Camera Web Server</h1>
+<h1>Beam Profiler Web Server</h1>
 <h2>Available Endpoints:</h2>
 {rows}
 <h2>Examples:</h2>
 <pre>
 curl http://localhost:5000/api/status
+curl http://localhost:5000/api/cameras
 curl -X POST -H "Content-Type: application/json" \\
      -d '{{"coords": [100, 100, 300, 300]}}' http://localhost:5000/api/set_rect
 curl http://localhost:5000/api/rect_stats

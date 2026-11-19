@@ -1,61 +1,46 @@
 """Live settings window for the spot fit (press `o` in the viewer).
 
-Runs its own Tk event loop on a daemon thread so the OpenCV grab/draw loop on
-the main thread is never blocked.  Nothing is mutated in place: edits build a
-new `FitConfig` and hand it to `fitconfig.set_active`, which swaps it in
-atomically, so a frame in flight can never see a half-applied change.
+A Toplevel on the shared Tk thread (see `tkhost`), so the OpenCV grab/draw
+loop on the main thread is never blocked.  Nothing is mutated in place: edits
+build a new `FitConfig` and hand it to `fitconfig.set_active`, which swaps it
+in atomically, so a frame in flight can never see a half-applied change.
 
 Every control is generated from `fitconfig.SETTINGS`, so adding a knob there
 adds it here with its range, its type and its explanation - there is no
 per-field UI code to keep in sync.
-
-The root is created once and merely hidden on close: Tk does not reliably
-allow a second `tk.Tk()` in the same process after the first is destroyed
-(it fails with "tk wasn't installed properly"), which would stop the window
-reopening.  The daemon thread therefore lives for the life of the process.
 """
 
 from __future__ import annotations
 
-import logging
-import threading
 import tkinter as tk
 from tkinter import ttk
 
 from .. import fitconfig
+from . import tkhost
+from .tkhost import BORDER, FIELD, SUBTEXT
 
 SLIDER_SPAN = 200.0  # ranges wider than this get a plain entry box instead
 
-# palette shared by every widget style (light, flat, single accent)
-BG = "#eceff4"
-CARD = "#ffffff"
-BORDER = "#d8dee9"
-ACCENT = "#2563eb"
-ACCENT_DARK = "#1d4ed8"
-TEXT = "#1f2430"
-SUBTEXT = "#5b6472"
-FIELD = "#f6f8fb"
-
 _window: SettingsWindow | None = None
-_lock = threading.Lock()
 
 
 def open_settings():
     """Open the settings window, or raise it if it is already open."""
+    tkhost.call(_open)
+
+
+def _open(root):
     global _window
-    with _lock:
-        if _window is not None:
-            _window.show()
-            return
+    if _window is None or not _window.exists():
         _window = SettingsWindow()
-        threading.Thread(target=_window.run, name="fit-settings", daemon=True).start()
+        _window.build(root)
+    else:
+        _window.show()
 
 
 def close_settings():
-    """Hide the window; the Tk root stays alive so it can be reopened."""
-    with _lock:
-        if _window is not None:
-            _window.close()
+    """Hide the window (it is kept, so reopening is instant)."""
+    tkhost.call(lambda _root: _window.close() if _window is not None else None)
 
 
 def is_open() -> bool:
@@ -66,37 +51,25 @@ def is_open() -> bool:
 
 class SettingsWindow:
     def __init__(self):
-        self.alive = False
         self.visible = False
-        self._root: tk.Tk | None = None
+        self.win: tk.Toplevel | None = None
         self._vars: dict[str, tk.Variable] = {}
         self._applying = False  # suppress the write-back while we refresh widgets
         self._shown = fitconfig.active()
 
     # ------------------------------------------------------------------ #
-    def run(self):
-        try:
-            self._build()
-            self.alive = True
-            self._root.mainloop()
-        except Exception as e:
-            logging.error(f"settings window failed: {e}")
-        finally:
-            self.alive = False
-            self.visible = False
-
-    def _build(self):
+    def build(self, master: tk.Misc):
+        """Create the window as a Toplevel of `master`, on the Tk thread."""
         # widget construction fires the slider callbacks; ignore them until
         # every control exists, or _collect sees a half-built _vars
         self._applying = True
-        self._root = root = tk.Tk()
-        root.title("Spot fitting settings")
-        root.minsize(580, 680)
-        root.configure(background=BG)
-        root.protocol("WM_DELETE_WINDOW", self.close)  # hide, keep the root
-        self._style(root)
+        self.win = win = tk.Toplevel(master)
+        win.title("Spot fitting settings")
+        win.minsize(580, 680)
+        win.configure(background=tkhost.BG)
+        win.protocol("WM_DELETE_WINDOW", self.close)
 
-        header = ttk.Frame(root, padding=(16, 14, 16, 4))
+        header = ttk.Frame(win, padding=(16, 14, 16, 4))
         header.pack(fill="x")
         ttk.Label(header, text="Spot fitting", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
@@ -105,7 +78,7 @@ class SettingsWindow:
             style="Sub.TLabel",
         ).pack(anchor="w", pady=(2, 0))
 
-        body = ttk.Frame(root, padding=(16, 0))
+        body = ttk.Frame(win, padding=(16, 0))
         body.pack(fill="both", expand=True)
 
         cfg = fitconfig.active()
@@ -121,7 +94,7 @@ class SettingsWindow:
             self._add_row(groups[s.group], s, getattr(cfg, s.name))
 
         self._help = tk.Text(
-            root, height=7, wrap="word", relief="flat", borderwidth=0,
+            win, height=7, wrap="word", relief="flat", borderwidth=0,
             background=FIELD, foreground=SUBTEXT, padx=12, pady=10,
             highlightthickness=1, highlightbackground=BORDER, highlightcolor=BORDER,
         )
@@ -133,7 +106,7 @@ class SettingsWindow:
             "docs/fitting-calibration.md shows the measurements behind each default."
         )
 
-        buttons = ttk.Frame(root, padding=16)
+        buttons = ttk.Frame(win, padding=16)
         buttons.pack(fill="x")
         ttk.Button(buttons, text="Restore defaults", command=self._defaults).pack(side="left")
         ttk.Button(buttons, text="Reload from file", command=self._reload).pack(
@@ -145,59 +118,7 @@ class SettingsWindow:
 
         self._applying = False
         self.visible = True
-        root.after(500, self._poll_external)
-
-    @staticmethod
-    def _style(root: tk.Tk):
-        """Flat, light theme with one accent colour, on top of clam."""
-        style = ttk.Style(root)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        from tkinter import font as tkfont  # noqa: PLC0415  (needs a root first)
-
-        base = tkfont.nametofont("TkDefaultFont")
-        base.configure(size=10)
-        family = base.actual("family")
-        style.configure(".", background=BG, foreground=TEXT)
-        style.configure("TFrame", background=BG)
-        style.configure("TLabel", background=BG, foreground=TEXT)
-        style.configure("Title.TLabel", font=(family, 14, "bold"))
-        style.configure("Sub.TLabel", foreground=SUBTEXT)
-        style.configure("Card.TLabel", background=CARD)
-        style.configure(
-            "Card.TLabelframe", background=CARD, relief="solid",
-            borderwidth=1, bordercolor=BORDER,
-        )
-        style.configure(
-            "Card.TLabelframe.Label", background=BG, foreground=ACCENT,
-            font=(family, 10, "bold"),
-        )
-        style.configure("Card.TFrame", background=CARD)
-        style.configure("Card.TCheckbutton", background=CARD)
-        style.map("Card.TCheckbutton", background=[("active", CARD)])
-        style.configure(
-            "TEntry", fieldbackground=FIELD, bordercolor=BORDER,
-            lightcolor=BORDER, darkcolor=BORDER, padding=3,
-        )
-        style.configure(
-            "Horizontal.TScale", troughcolor=BORDER, background=CARD,
-            lightcolor=CARD, darkcolor=CARD,
-        )
-        style.configure(
-            "TButton", padding=(14, 7), background="#e2e7ef", bordercolor=BORDER,
-            lightcolor="#e2e7ef", darkcolor="#e2e7ef", focusthickness=0,
-        )
-        style.map("TButton", background=[("active", "#d3dae6"), ("pressed", "#c6cedd")])
-        style.configure(
-            "Accent.TButton", background=ACCENT, foreground="#ffffff",
-            bordercolor=ACCENT, lightcolor=ACCENT, darkcolor=ACCENT,
-        )
-        style.map(
-            "Accent.TButton",
-            background=[("active", ACCENT_DARK), ("pressed", ACCENT_DARK)],
-        )
+        win.after(500, self._poll_external)
 
     def _add_row(self, parent: ttk.LabelFrame, s: fitconfig.Setting, value):
         row = parent.grid_size()[1]
@@ -291,12 +212,12 @@ class SettingsWindow:
 
     def _poll_external(self):
         """Pick up changes made elsewhere (HTTP API, another window)."""
-        if not self.alive and self._root is None:
+        if self.win is None:
             return
         cfg = fitconfig.active()
         if cfg != self._shown:
             self._show(cfg)
-        self._root.after(500, self._poll_external)
+        self.win.after(500, self._poll_external)
 
     def _set_help(self, text: str):
         self._help.configure(state="normal")
@@ -304,32 +225,30 @@ class SettingsWindow:
         self._help.insert("1.0", text)
         self._help.configure(state="disabled")
 
-    def show(self):
-        if self._root is not None:
-            self._root.after(0, self._on_show)
+    def exists(self) -> bool:
+        try:
+            return self.win is not None and bool(self.win.winfo_exists())
+        except tk.TclError:
+            return False
 
-    def _on_show(self):
+    def show(self):
+        """Raise the window with current values (on the Tk thread)."""
         self._show(fitconfig.active())
-        self._root.deiconify()
-        self._root.lift()
+        self.win.deiconify()
+        self.win.lift()
         self.visible = True
 
     def close(self):
-        """Hide, do not destroy - see the module docstring."""
+        """Hide, keeping the widgets for a quick reopen (on the Tk thread)."""
         self.visible = False
-        if self._root is not None:
-            try:
-                self._root.after(0, self._root.withdraw)
-            except tk.TclError:
-                pass
+        if self.win is not None:
+            self.win.withdraw()
 
     def destroy(self):
-        """Tear the root down for good.  Only used by the tests."""
-        self.alive = False
         self.visible = False
-        if self._root is not None:
-            root, self._root = self._root, None
+        if self.win is not None:
+            win, self.win = self.win, None
             try:
-                root.destroy()
+                win.destroy()
             except tk.TclError:
                 pass

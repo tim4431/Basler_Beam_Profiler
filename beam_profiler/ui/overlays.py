@@ -283,3 +283,63 @@ def draw_row_col(img, view: ViewTransform, rows, columns):
         _dashed_line(img, p1, p2, color)
         for px, py in zip(*view.roi_to_display_many(col.x, col.y)):
             cv2.drawMarker(img, (int(px), int(py)), color, cv2.MARKER_SQUARE, 10, 2)
+
+
+# --------------------------------------------------------------------------- #
+#  camera status: banner, "connecting" pill, toasts
+# --------------------------------------------------------------------------- #
+# BGR, like everything handed to imshow
+LEVEL_COLORS = {
+    "info": (235, 160, 40),  # blue
+    "warn": (0, 170, 255),  # amber
+    "error": (70, 70, 230),  # red
+}
+
+
+def draw_banner(img, title: str, lines: list[str], level: str = "error"):
+    """Centred card over the frame, for a state that blocks the picture
+    (camera disconnected)."""
+    h, w = img.shape[:2]
+    color = LEVEL_COLORS.get(level, LEVEL_COLORS["info"])
+    title_w = cv2.getTextSize(title, FONT, 0.95, 2)[0][0]
+    line_w = max((cv2.getTextSize(s, FONT, 0.62, 1)[0][0] for s in lines), default=0)
+    bw = min(w - 40, max(title_w, line_w) + 64)
+    bh = 72 + 30 * len(lines)
+    x0, y0 = (w - bw) // 2, (h - bh) // 2 - 40
+    panel(img, x0, y0, x0 + bw, y0 + bh, alpha=0.82)
+    cv2.rectangle(img, (x0, y0), (x0 + bw, y0 + 5), color, -1)
+    text(img, title, (x0 + 32, y0 + 48), color, scale=0.95, thickness=2)
+    for i, line in enumerate(lines):
+        text(img, line, (x0 + 32, y0 + 84 + 30 * i), (225, 225, 225), scale=0.62, thickness=1)
+
+
+def draw_pill(img, message: str, level: str = "warn", y: int = 14, right: bool = False):
+    """Small notice that does not hide the picture (connecting): centred, or
+    in the top-right corner clear of the HUD."""
+    color = LEVEL_COLORS.get(level, LEVEL_COLORS["info"])
+    (tw, th), _ = cv2.getTextSize(message, FONT, 0.6, 1)
+    x0 = img.shape[1] - tw - 48 if right else (img.shape[1] - tw) // 2 - 18
+    panel(img, x0, y, x0 + tw + 36, y + th + 18, alpha=0.8)
+    cv2.rectangle(img, (x0, y), (x0 + 4, y + th + 18), color, -1)
+    text(img, message, (x0 + 18, y + th + 9), (240, 240, 240), scale=0.6, thickness=1)
+
+
+def draw_toasts(img, toasts, now: float, bottom: int, lifetime: float = 6.0):
+    """Recent (time, text, level) messages, newest at the bottom right, fading
+    out over their last second."""
+    y = bottom
+    for t0, message, level in reversed(toasts):
+        age = now - t0
+        if age > lifetime:
+            continue
+        fade = min(1.0, lifetime - age)
+        (tw, th), _ = cv2.getTextSize(message, FONT, 0.58, 1)
+        x1 = img.shape[1] - 12
+        x0 = x1 - tw - 34
+        y0 = y - th - 18
+        panel(img, x0, y0, x1, y, alpha=0.8 * fade)
+        color = LEVEL_COLORS.get(level, LEVEL_COLORS["info"])
+        cv2.rectangle(img, (x0, y0), (x0 + 4, y), color, -1)
+        shade = int(240 * fade)
+        text(img, message, (x0 + 18, y - 9), (shade, shade, shade), scale=0.58, thickness=1)
+        y = y0 - 8

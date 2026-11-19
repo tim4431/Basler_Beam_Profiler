@@ -26,11 +26,25 @@ done
 command -v "$PY" >/dev/null || { echo "error: $PY not found" >&2; exit 1; }
 "$PY" -c 'import sys; sys.exit(sys.version_info < (3, 10))' \
     || { echo "error: Python 3.10+ required ($("$PY" --version))" >&2; exit 1; }
-if ! "$PY" -c 'import ensurepip' 2>/dev/null; then
-    ver=$("$PY" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')
-    echo "error: $PY has no venv/ensurepip support. Install it with:" >&2
-    echo "    sudo apt install python${ver}-venv" >&2
-    exit 1
+# venv and tkinter (settings window, save dialog) are separate apt packages on
+# Ubuntu and cannot be pip-installed into the venv.
+ver=$("$PY" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')
+missing=()
+"$PY" -c 'import ensurepip' 2>/dev/null || missing+=("python${ver}-venv")
+"$PY" -c 'import tkinter' 2>/dev/null || missing+=("python${ver}-tk")
+if [ ${#missing[@]} -gt 0 ]; then
+    echo ">> $PY is missing system packages: ${missing[*]}"
+    if [ -t 0 ] && command -v apt-get >/dev/null; then
+        read -r -p "   Install them now with sudo apt? [Y/n] " ans
+        if [[ ! "$ans" =~ ^[Nn] ]]; then
+            sudo apt-get update -q && sudo apt-get install -y "${missing[@]}"
+        fi
+    fi
+    "$PY" -c 'import ensurepip' 2>/dev/null || {
+        echo "error: venv support missing. Run: sudo apt install ${missing[*]}" >&2; exit 1; }
+    "$PY" -c 'import tkinter' 2>/dev/null || \
+        echo "   warning: no tkinter; the settings window (o) and save dialog (d) will be disabled." \
+             "Fix: sudo apt install python${ver}-tk, then re-run ./setup.sh"
 fi
 
 # --- venv + dependencies ----------------------------------------------------

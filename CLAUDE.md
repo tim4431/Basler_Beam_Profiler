@@ -11,14 +11,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The project runs from `.venv/` (gitignored); use `.venv/bin/python` for tests
 and scripts. `setup.sh` takes `python3` from PATH (override with `PYTHON=`);
-without ensurepip it asks for `sudo apt install python3.X-venv`.
+tkinter and venv are apt packages (`python3.X-tk`, `python3.X-venv`), not pip;
+setup.sh detects them and offers to install. Without tkinter the app still runs
+(settings window and save dialog log a warning instead).
 
-For real cameras the Basler pylon SDK must be installed system-wide. Any
-enumerated Basler opens whether or not it is in `camera_config.yaml`; the entry
-(keyed by exact model name, a glob, or a serial under `serials:`) only supplies
-`pixel_size` and any model quirks — `python -m beam_profiler --list-cameras`
-prints a paste-ready block for whatever is plugged in. With no camera
-connected, the app falls back to the simulator. `run.sh` runs `.venv/bin/python -m beam_profiler` and,
+For Basler cameras the pylon SDK must be installed system-wide; other GenICam
+cameras need `pip install harvesters` plus the vendor SDK (GenTL producer), USB
+webcams need nothing. Any enumerated camera opens whether or not it is in
+`camera_config.yaml`; the entry (keyed by exact model name, a glob, or a serial
+under `serials:`) only supplies `pixel_size` and any model quirks —
+`python -m beam_profiler --list-cameras` prints a paste-ready block, and the
+Cameras window (`k`) writes label/pixel size for you. With no camera connected,
+the app shows the simulator and switches to the first camera plugged in.
+`PYLON_CAMEMU=2` gives two emulated Baslers for testing the real driver. `run.sh` runs `.venv/bin/python -m beam_profiler` and,
 without a terminal (desktop icon), appends output to `data/launcher.log`.
 
 ## Test signal / debugging without hardware
@@ -53,12 +58,17 @@ GitHub release** — don't merge to main casually.
 All code lives in the `beam_profiler/` package; `pylon_camera.py` is only a
 compatibility shim for run.sh/PyInstaller.
 
-- `cameras/` — `base.Camera` defines the interface (grab_image, ROI,
-  ExposureTime, Gain properties) plus shared PID auto-exposure and
-  `apply_settings`; `basler.py` (pypylon) and `simulated.py` implement it.
-  `open_cameras()` does discovery + sim fallback, `probe_devices()` backs
-  `--list-cameras`. Anything testable without hardware must not import pypylon
-  at module level.
+- `cameras/` — `base.py` defines `Backend` (enumerate/open/probe a family of
+  devices) and `Camera` (grab_image, ROI, ExposureTime, Gain properties, plus
+  shared PID auto-exposure and `apply_settings`). Backends: `basler.py`
+  (pypylon), `genicam.py` (harvesters, any GenTL producer; untested on real
+  non-Basler hardware), `uvc.py` (OpenCV webcams), `simulated.py`; registered
+  in `cameras/__init__.BACKENDS`, imported lazily so a missing SDK disables
+  only that backend. `manager.CameraManager` scans every backend on a
+  background thread and turns the diff into added/removed/returned events;
+  `session.CameraSession` decides what the viewer shows: opens on a worker
+  thread, goes offline on disconnect, reopens and restores state on return.
+  Anything testable without hardware must not import pypylon at module level.
 - `cameraconfig.py` — the same idea as `fitconfig.py` for everything that
   differs between camera models: pixel size, exposure limits, pixel formats,
   trigger mode, I/O lines. `SETTINGS` holds each field's type and help text,
@@ -76,9 +86,11 @@ compatibility shim for run.sh/PyInstaller.
   `spots.py` (`SpotArray`, the columnar result container), `grid.py`
   (row/column classification), `stats.py` (rectangle pixel stats — the single
   source used by both UI and HTTP server).
-- `ui/viewer.py` — single-threaded main loop (grab → process → draw → keys);
-  owns all mutable state, which `server.py` (Flask, daemon thread) and
-  `status.py` read. `ui/overlays.py` draws HUD/stats/spots.
+- `ui/viewer.py` — main loop (`step()`: service camera events → grab →
+  process → draw, then keys); owns all mutable state, which `server.py` (Flask,
+  daemon thread) and `status.py` read. `ui/overlays.py` draws HUD/stats/spots,
+  the disconnect banner and toasts. `ui/settings.py` and `ui/cameras_window.py`
+  are Tk Toplevels on the single Tk thread in `ui/tkhost.py`.
 
 ### Conventions that bite
 
@@ -135,6 +147,25 @@ compatibility shim for run.sh/PyInstaller.
   and skipped while the rest of the block applies, `pixel_size <= 0` counts as
   unset, and `trigger_mode` accepts YAML's bare `off` (which parses as the
   boolean false). `tests/test_camera_config.py` pins all of this.
+- **Only the main thread touches a Camera.** The scanner thread only
+  enumerates; opening runs on the manager's worker thread and the result is
+  handed over. The Tk windows and the HTTP server read `manager.snapshot()`
+  and `manager.post(...)` requests that `CameraSession.service()` carries out
+  each frame. Hardware calls from the viewer go through `cams.guard(...)`, which
+  turns a dead camera into the offline state instead of an exception.
+- **Camera getters are cached.** `ROI`/`ExposureTime`/`Gain` return the last
+  value written (read back once), never a node read: the HUD calls them every
+  frame, and they must keep answering after an unplug so the session can save
+  the state it restores on reconnect. `close()` must never raise.
+- **One Tk root per process** (`tkhost`). Never call `tk.Tk()` elsewhere; queue
+  work with `tkhost.call(fn)`, which runs `fn(root)` on the Tk thread.
+- **Nothing a camera does may end the loop.** `Viewer.run` catches per-frame
+  exceptions (logged once per 10 s, shown as a toast); only Esc/close quits.
+  Basler timeouts are not disconnects — `IsCameraDeviceRemoved()` decides;
+  other backends give up after `MAX_CONSECUTIVE_FAILURES` failed grabs.
+- `cameraconfig.save_entry` patches camera_config.yaml as text and refuses to
+  write unless the parsed result equals the old file plus exactly the change.
+  Keep that check; the file is hand-edited and its comments matter.
 - CV changes must keep `tests/` passing — they check detection count,
   sub-pixel position error, widths, orientation and grid classification
   against synthetic ground truth.

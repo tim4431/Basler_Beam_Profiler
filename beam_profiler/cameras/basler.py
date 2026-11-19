@@ -5,6 +5,10 @@ exposure limits and pixel size all come from `cameraconfig`, and anything the
 camera turns out not to support is logged and skipped rather than raised.  So a
 new Basler works as soon as its `pixel_size` is in `camera_config.yaml`, and it
 still opens (with uncalibrated microns) before that.
+
+Unplugging is detected with `IsCameraDeviceRemoved`, which pylon keeps current,
+so a timeout (long exposure, missed trigger) is never mistaken for a lost
+camera.  Set PYLON_CAMEMU=2 to get two emulated cameras for testing.
 """
 
 from __future__ import annotations
@@ -15,29 +19,76 @@ import numpy as np
 from pypylon import pylon
 
 from .. import cameraconfig
-from .base import Camera
+from .base import Backend, Camera, CameraDisconnected, DeviceInfo
+
+
+class BaslerBackend(Backend):
+    name = "basler"
+    title = "Basler (pylon)"
+    install_hint = "install the pylon SDK and `pip install pypylon`"
+
+    def enumerate(self, full: bool = False) -> list[DeviceInfo]:
+        return [
+            DeviceInfo(
+                backend=self.name,
+                model=d.GetModelName(),
+                serial=d.GetSerialNumber(),
+                vendor=d.GetVendorName() or "Basler",
+                address=d.GetFullName(),
+            )
+            for d in pylon.TlFactory.GetInstance().EnumerateDevices()
+        ]
+
+    def open(self, info: DeviceInfo, mode: str) -> Camera:
+        cam = BaslerCamera(mode=mode, serial=info.serial)
+        cam.device = info
+        return cam
+
+    def probe(self, info: DeviceInfo) -> dict:
+        for d in pylon.TlFactory.GetInstance().EnumerateDevices():
+            if d.GetSerialNumber() == info.serial:
+                return probe_device(d)
+        return {**super().probe(info), "error": "no longer connected"}
 
 
 class BaslerCamera(Camera):
-    def __init__(self, mode: str = "16Bit", device_idx: int = 0):
+    backend = "basler"
+
+    def __init__(self, mode: str = "16Bit", device_idx: int = 0, serial: str | None = None):
+        """Open the camera with this serial number, or the `device_idx`-th one
+        enumerated when no serial is given."""
         factory = pylon.TlFactory.GetInstance()
-        devices = factory.EnumerateDevices()
-        if device_idx >= len(devices):
-            raise IndexError(f"Only {len(devices)} cameras found, idx={device_idx}")
-        self.device_info = devices[device_idx]
-        self.camera = pylon.InstantCamera(factory.CreateDevice(self.device_info))
+        if serial:
+            wanted = pylon.DeviceInfo()
+            wanted.SetSerialNumber(serial)
+            device = factory.CreateFirstDevice(wanted)
+        else:
+            devices = factory.EnumerateDevices()
+            if device_idx >= len(devices):
+                raise IndexError(f"Only {len(devices)} cameras found, idx={device_idx}")
+            device = factory.CreateDevice(devices[device_idx])
+        self.camera = pylon.InstantCamera(device)
+        self.device_info = self.camera.GetDeviceInfo()
         self.model_name = self.device_info.GetModelName()
         self.serial = self.device_info.GetSerialNumber()
-        logging.info(f"Connected to camera: {self.model_name} ({self.serial})")
+        logging.info(f"Connecting to camera: {self.model_name} ({self.serial})")
 
         settings = cameraconfig.resolve(self.model_name, self.serial)
         super().__init__(mode, settings)
         logging.info(cameraconfig.describe(settings, self.model_name))
 
+        try:
+            self._configure(settings)
+        except Exception:
+            self.close()  # never leave a half-opened device locked
+            raise
+
+    def _configure(self, settings):
         self.camera.Open()
         self.W = int(self.camera.Width.Max)
         self.H = int(self.camera.Height.Max)
         self._clamp_exposure_limits()
+        self._roi = self._read_roi()
 
         self.converter = pylon.ImageFormatConverter()
         self._select_pixel_format()
@@ -134,6 +185,7 @@ class BaslerCamera(Camera):
         """Software triggering where the model has it.  `trigger_mode: off`
         free-runs; `auto` falls back to free-running silently enough."""
         self.software_trigger = False
+        self._can_wait_trigger = False
         mode = self.settings.trigger_mode
         if mode == "off":
             try:
@@ -147,6 +199,10 @@ class BaslerCamera(Camera):
             self.camera.TriggerMode.Value = "On"
             self.camera.TriggerSource.Value = "Software"
             self.software_trigger = True
+            try:  # needs AcquisitionStatus or SoftwareTrigger.IsDone on the model
+                self._can_wait_trigger = bool(self.camera.CanWaitForFrameTriggerReady())
+            except Exception:
+                self._can_wait_trigger = False
         except Exception as e:
             log = logging.error if mode == "software" else logging.warning
             log(f"Software trigger unavailable, free-running: {e}")
@@ -192,32 +248,32 @@ class BaslerCamera(Camera):
         self.camera.UserOutputValue.Value = high
 
     # ------------------------------ properties --------------------------- #
+    # Getters answer from the value last written (as read back from the
+    # camera), so the per-frame HUD costs no USB round trips and they keep
+    # working after the camera is unplugged.
     @property
     def Gain(self):
-        return self.camera.Gain.Value
+        return self._gain
 
     @Gain.setter
     def Gain(self, value):
         self.camera.Gain.Value = value
+        self._gain = float(self.camera.Gain.Value)
 
     @property
     def ExposureTime(self):
-        return self.camera.ExposureTime.Value
+        return self._exposure
 
     @ExposureTime.setter
     def ExposureTime(self, value):
         self.camera.ExposureTime.Value = float(
             np.clip(value, self.min_exposure, self.max_exposure)
         )
+        self._exposure = float(self.camera.ExposureTime.Value)
 
     @property
     def ROI(self):
-        return (
-            self.camera.Width.Value,
-            self.camera.Height.Value,
-            self.camera.OffsetX.Value,
-            self.camera.OffsetY.Value,
-        )
+        return self._roi
 
     @ROI.setter
     def ROI(self, value):
@@ -233,6 +289,18 @@ class BaslerCamera(Camera):
                 self.camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
         except Exception as e:
             logging.error(f"Failed to set ROI: {e}")
+        self._roi = self._read_roi()
+
+    def _read_roi(self):
+        try:
+            return (
+                int(self.camera.Width.Value),
+                int(self.camera.Height.Value),
+                int(self.camera.OffsetX.Value),
+                int(self.camera.OffsetY.Value),
+            )
+        except Exception:  # unplugged mid-change: keep what we had
+            return getattr(self, "_roi", (self.W, self.H, 0, 0))
 
     def _apply_roi(self, width, height, offset_x, offset_y):
         width = max(10, min(width, self.W))
@@ -250,26 +318,49 @@ class BaslerCamera(Camera):
         return value - (value - node.Min) % node.Inc
 
     # ------------------------------ acquisition -------------------------- #
+    def is_connected(self) -> bool:
+        try:
+            return not self.camera.IsCameraDeviceRemoved()
+        except Exception:
+            return False
+
     def _grab(self) -> np.ndarray | None:
+        if self.camera.IsCameraDeviceRemoved():
+            raise CameraDisconnected(f"{self.label} ({self.serial}) was removed")
         if self.userdefined_line_enabled:
             self._set_user_output(False)  # pulse low around the acquisition
         if self.software_trigger:
+            # A trigger sent before the camera is armed is silently dropped -
+            # right after StartGrabbing, i.e. after every ROI change - and the
+            # grab then times out.
+            if self._can_wait_trigger:
+                self.camera.WaitForFrameTriggerReady(
+                    self.settings.grab_timeout_ms, pylon.TimeoutHandling_Return
+                )
             self.camera.TriggerSoftware.Execute()
         result = self.camera.RetrieveResult(
             self.settings.grab_timeout_ms, pylon.TimeoutHandling_ThrowException
         )
-        if self.userdefined_line_enabled:
-            self._set_user_output(True)
-        if not result.GrabSucceeded():
+        try:
+            if self.userdefined_line_enabled:
+                self._set_user_output(True)
+            if not result.GrabSucceeded():
+                return None
+            return self.converter.Convert(result).GetArray().copy()
+        finally:
             result.Release()
-            return None
-        img = self.converter.Convert(result).GetArray().copy()
-        result.Release()
-        return img
 
     def close(self):
-        self.camera.StopGrabbing()
-        self.camera.Close()
+        """Tear down in the order pylon wants; every step may fail on a camera
+        that has been unplugged, and none of them may stop the others."""
+        camera = getattr(self, "camera", None)
+        if camera is None:
+            return
+        for step in (camera.StopGrabbing, camera.Close, camera.DestroyDevice):
+            try:
+                step()
+            except Exception as e:
+                logging.debug(f"{step.__name__} on close: {e}")
 
 
 # --------------------------------------------------------------------------- #
@@ -284,6 +375,7 @@ def probe_device(device_info) -> dict:
         "model": device_info.GetModelName(),
         "serial": device_info.GetSerialNumber(),
         "vendor": device_info.GetVendorName(),
+        "backend": BaslerBackend.name,
     }
     camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateDevice(device_info))
     try:

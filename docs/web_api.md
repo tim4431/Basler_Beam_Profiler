@@ -13,7 +13,8 @@ rectangle (`fit_rect`) are handled by separate endpoints.
 
 | Endpoint | Description |
 | --- | --- |
-| `GET /api/status` | Camera model/serial/label, pixel size, exposure and its limits, ROI, auto-exposure and fitting flags, both rectangles |
+| `GET /api/status` | Camera model/serial/label, whether it is connected, pixel size, exposure and its limits, ROI, auto-exposure and fitting flags, both rectangles |
+| `GET /api/cameras` | Every camera found (all backends), its state, and which one is in use |
 | `GET /api/rect_stats` | Pixel statistics inside the white rectangle |
 | `GET /api/fit_rect_stats` | Pixel statistics inside the green fitting rectangle |
 | `GET /api/spots` | Detected spots plus the aggregated row/column statistics |
@@ -30,6 +31,7 @@ rectangle (`fit_rect`) are handled by separate endpoints.
 | `POST /api/set_fit_rect` | `{"coords": [x1, y1, x2, y2]}` | Set the green fitting rectangle |
 | `POST /api/clear_rect` | - | Clear the white rectangle |
 | `POST /api/clear_fit_rect` | - | Clear the green fitting rectangle |
+| `POST /api/select_camera` | `{"camera": "40615333"}` | Switch camera; matches a serial, label, model or uid. Answers `202` at once - the switch happens on the next frame - or `404` if nothing matches |
 
 ## Examples
 
@@ -47,6 +49,11 @@ curl http://localhost:5000/api/rect_stats
 
 # grab the current frame
 curl http://localhost:5000/api/image -o current_image.jpg
+
+# list the cameras, then switch to one by serial (or label, or model)
+curl http://localhost:5000/api/cameras
+curl -X POST -H "Content-Type: application/json" \
+     -d '{"camera": "40615333"}' http://localhost:5000/api/select_camera
 ```
 
 `/api/status` responds with:
@@ -56,6 +63,10 @@ curl http://localhost:5000/api/image -o current_image.jpg
   "camera_model": "a2A5060-15umBAS",
   "camera_serial": "40615333",
   "camera_label": "profiler head, west arm",
+  "camera_uid": "basler:40615333",
+  "camera_backend": "basler",
+  "camera_connected": true,
+  "camera_offline_reason": null,
   "pixel_size": 2.5e-06,
   "pixel_size_known": true,
   "exposure_time": 2866.0,
@@ -96,6 +107,30 @@ curl http://localhost:5000/api/image -o current_image.jpg
 Statistics are computed on the **raw** frame (12-bit data in a 16-bit array when
 the camera runs in `16Bit` mode), while `/api/image` returns an 8-bit JPEG
 rendering of it.
+
+`/api/cameras` responds with one entry per camera; `state` is one of `active`,
+`connecting`, `available`, `lost` (was in use, unplugged, will reconnect by
+itself), `absent` (unplugged) or `error` (would not open; see `error`):
+
+```json
+{
+  "active": "basler:40615333",
+  "connected": true,
+  "cameras": [
+    {"uid": "basler:40615333", "backend": "basler", "model": "a2A5060-15umBAS",
+     "serial": "40615333", "label": "profiler head, west arm", "state": "active",
+     "present": true, "active": true, "sensor": [5060, 5060],
+     "pixel_size": 2.5e-06, "pixel_size_known": true, "...": "..."},
+    {"uid": "sim:SIM-0001", "backend": "sim", "model": "Simulated-4x4",
+     "state": "available", "...": "..."}
+  ],
+  "backends": [{"name": "basler", "title": "Basler (pylon)", "available": true, "...": "..."}]
+}
+```
+
+While the camera is unplugged, `/api/status` keeps answering with
+`"camera_connected": false` and the last known exposure and ROI, and
+`/api/image` returns 400 (there is no current frame).
 
 ## Notes
 

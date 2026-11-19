@@ -1,8 +1,10 @@
 # Basler Beam Profiler
 
-A Python application for live laser-beam profiling with Basler cameras: spot
+A Python application for live laser-beam profiling with Basler cameras - and
+other GenICam cameras (FLIR, Allied Vision, IDS, ...) or USB webcams: spot
 detection, sub-pixel 2D Gaussian fits, beam-array (grid) statistics, an HTTP
-API and hardware sync outputs.
+API and hardware sync outputs. Cameras can be plugged in, switched and
+unplugged while it runs.
 
 ![Demo](docs/demo.png)
 
@@ -20,6 +22,7 @@ Manually, in any environment:
 pip install -r requirements.txt
 python -m beam_profiler            # live camera (falls back to the simulator)
 python -m beam_profiler --sim      # simulated camera, no hardware needed
+python -m beam_profiler --camera 40615333   # start on this camera (serial/label/model)
 python pylon_camera.py             # legacy entry point, same application
 ```
 
@@ -53,9 +56,12 @@ beam_profiler/
 ├── config.py          paths, constants, camera_config.yaml loading
 ├── synthetic.py       synthetic spot images (simulator, tests, tools)
 ├── roi.py             ROI zoom model + sensor<->display mapping
-├── cameras/           base.py (interface + auto-exposure), basler.py, simulated.py
+├── cameras/           base.py (Backend/Camera interface + auto-exposure),
+│                      basler.py, genicam.py, uvc.py, simulated.py,
+│                      manager.py (discovery, hot-plug), session.py (switch/reconnect)
 ├── processing/        blobs.py (detection + Gaussian fits), grid.py, stats.py
-├── ui/                viewer.py (main loop, input), overlays.py (HUD, bars)
+├── ui/                viewer.py (main loop, input), overlays.py (HUD, bars),
+│                      cameras_window.py, settings.py, tkhost.py (shared Tk thread)
 ├── server.py          Flask HTTP API
 └── status.py          pylon_camera.json mirror
 ```
@@ -75,11 +81,15 @@ truth (positions, widths, orientation, grid classification).
 
 ### Configuring and adding cameras
 
-Any Basler that pylon enumerates will open, listed in `camera_config.yaml` or
+Any camera the app enumerates will open, listed in `camera_config.yaml` or
 not. The only value the application cannot discover for itself is the pixel
-size, because no Basler reports it over GenICam.
+size, because cameras do not report it.
 
-To add a model, plug it in and ask what it is:
+The quickest way to add one: plug it in while the app runs, press `k` for the
+**Cameras** window, select it, enter the pixel size (µm) and press *Save*.
+That writes `camera_config.yaml` for you, keeping its comments.
+
+Or, from the command line, plug it in and ask what it is:
 
 ```bash
 python -m beam_profiler --list-cameras        # report + a paste-ready YAML block
@@ -131,9 +141,26 @@ Saved frames (`data/`) and the live status file (`pylon_camera.json`) are writte
 next to the executable.
 
 A toolbar along the bottom edge of the window gives mouse access to the most
-common toggles — Fit, Stats, Grid, Web, Save and the Settings window — with
-the active ones highlighted. Closing the window (title-bar X) quits the
+common toggles — Fit, Stats, Grid, Cameras, Web, Save and the Settings window —
+with the active ones highlighted. Closing the window (title-bar X) quits the
 application, same as `Esc`.
+
+### Cameras: switching, hot-plugging, other vendors
+
+The app watches for cameras in the background. Plugging one in shows a
+"Camera connected" message and lists it in the **Cameras** window (`k`), where
+a double-click switches to it; `t` cycles through the connected cameras. Each
+camera keeps its own ROI, exposure and rectangles.
+
+Unplugging the camera in use does not end the program: the picture dims under
+a *Camera disconnected* banner, and when the camera comes back it is reopened
+with all its settings. Started with no camera attached, the app shows the
+simulator and switches to the first real camera you plug in.
+
+Besides Basler (pylon), the app supports GenICam cameras from other vendors
+through [`harvesters`](https://github.com/genicam/harvesters) (`pip install
+"harvesters>=1.4"` plus the vendor's SDK for its GenTL producer) and USB
+webcams through OpenCV. See [docs/cameras.md](docs/cameras.md#camera-types).
 
 ### Keyboard Shortcuts
 - `Esc`: Quit the application (or close the window)
@@ -148,7 +175,8 @@ application, same as `Esc`.
 - `v`: clear the green rectangle
 - `s`: quick save the current frame (JPEG + raw `.npy`)
 - `d`: save the current frame with dialogue box, allowing the user to choose the file location and name
-- `t`: switch to the next camera (if multiple cameras are connected)
+- `t`: switch to the next connected camera
+- `k`: open the Cameras window (every camera found, switch with a double-click, set label and pixel size)
 - `o`: open the spot-fitting settings window (crop size, re-crop stages, adaptive weighting, GPU backend)
 - `w`: toggle the HTTP server (port 5000), together with the live pixel statistics of the white rectangle drawn on the canvas
 - `y`: toggle the user-defined line output (Line3) used to sync external hardware
@@ -172,7 +200,8 @@ behind each default - the test suite re-runs those measurements.
 
 Pressing `w` starts a small HTTP server on port 5000 that exposes the camera
 status, the current frame, and the pixel statistics of the white / green
-rectangles. Open <http://localhost:5000> for the endpoint list, or see
+rectangles; `/api/cameras` lists the cameras and `/api/select_camera` switches
+between them. Open <http://localhost:5000> for the endpoint list, or see
 [docs/web_api.md](docs/web_api.md) for the full reference.
 
 The current state (camera, exposure, ROI, rectangles) is also mirrored to
@@ -181,7 +210,7 @@ starting the server.
 
 ## Hardware sync
 
-The camera is armed with a software trigger, and drives two GPIO lines:
+Basler cameras are armed with a software trigger, and drive two GPIO lines:
 
 - **Line2** - inverted `ExposureActive`, i.e. it mirrors the exposure window.
 - **Line3** - user-controlled output, toggled with `y`. While enabled it is

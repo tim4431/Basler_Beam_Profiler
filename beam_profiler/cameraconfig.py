@@ -1,8 +1,9 @@
 """Per-camera settings: the registry, `camera_config.yaml` and its resolution.
 
 Everything that differs from one camera model to the next lives here rather
-than as a literal in `cameras/basler.py`, so supporting another Basler is a few
-lines of YAML instead of a code change.  Add a field to `CameraSettings` plus
+than as a literal in a camera driver, so supporting another model is a few
+lines of YAML instead of a code change.  Model names are whatever the backend
+reports (pylon, GenICam, or the OS for USB cameras).  Add a field to `CameraSettings` plus
 its `SETTINGS` entry and it is loadable, type-checked and documented
 everywhere; do not read `camera_config.yaml` anywhere else.
 
@@ -23,9 +24,15 @@ Lookup order, each step overriding the previous field by field:
 
 from __future__ import annotations
 
+import copy
 import fnmatch
+import json
 import logging
 import os
+import re
+import stat
+import tempfile
+import threading
 from dataclasses import dataclass, fields, replace
 
 import yaml
@@ -97,7 +104,7 @@ SETTINGS: tuple[Setting, ...] = (
     Setting(
         "pixel_size", "optfloat",
         "Sensor pixel pitch in METRES (2.5e-6 = 2.5 um).  The one value that\n"
-        "cannot be guessed and is not readable over pylon - take it from the\n"
+        "cannot be guessed and is not readable from the camera - take it from the\n"
         "model's datasheet.  Every micron figure in the app scales with it.\n"
         "Left out, the app still runs but reports microns == pixels and says\n"
         "'px size unset' on the HUD.",
@@ -111,12 +118,12 @@ SETTINGS: tuple[Setting, ...] = (
     ),
     Setting(
         "pixel_format_8bit", "strlist",
-        "Candidate pylon PixelFormat values for '8Bit' mode, tried in order\n"
+        "Candidate GenICam PixelFormat values for '8Bit' mode, tried in order\n"
         "until one is accepted.  A single string is fine.",
     ),
     Setting(
         "pixel_format_16bit", "strlist",
-        "Candidate pylon PixelFormat values for '16Bit' mode, tried in order.\n"
+        "Candidate GenICam PixelFormat values for '16Bit' mode, tried in order.\n"
         "Output is always converted MSB-aligned into uint16, so any Mono depth\n"
         "works and saturation stays 65535.  The default list covers ace, ace 2,\n"
         "dart and pulse; --list-cameras prints what your model really has.",
@@ -150,7 +157,7 @@ SETTINGS: tuple[Setting, ...] = (
     ),
     Setting(
         "grab_timeout_ms", "int",
-        "How long to wait for a frame before pylon raises.  Raise it above the\n"
+        "How long to wait for a frame before giving up on it.  Raise it above the\n"
         "longest exposure you intend to use, plus readout.",
     ),
     Setting(
@@ -392,6 +399,229 @@ def _specificity(pattern: str) -> int:
     """Literal characters in a glob.  More literal = more specific = applied
     later, so `a2A5060*` wins over `a2A*` and both lose to an exact name."""
     return sum(c not in "*?[]!-" for c in pattern)
+
+
+# --------------------------------------------------------------------------- #
+#  writing (the Cameras window)
+# --------------------------------------------------------------------------- #
+SECTIONS = ("defaults", "cameras", "serials")
+_SAFE_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-]*$")
+_write_lock = threading.Lock()
+
+
+def writable_path() -> str:
+    """The file a save goes to: the one in use, else where it belongs."""
+    path = active_file().path
+    return path if path and os.path.exists(path) else default_config_path()
+
+
+def save_entry(section: str, key: str, values: dict, path: str | None = None) -> str:
+    """Set `values` (setting -> value, None for null) under `section:` ->
+    `key:` and return the path written.
+
+    The file is user-edited, so it is patched as text rather than re-dumped:
+    comments, ordering and formatting survive, and only the lines for these
+    settings change or are added.  The file, the section and the entry are
+    created when missing.  Before anything is written the result is parsed
+    back and compared with the old file plus exactly this change; if that does
+    not hold (or the old file does not parse), ValueError is raised and the
+    file is left alone.  Call `reload()` afterwards to pick it up."""
+    if section not in SECTIONS:
+        raise ValueError(f"section must be one of {SECTIONS}, got {section!r}")
+    key = str(key).strip()
+    if not key:
+        raise ValueError("empty key")
+    for name, value in values.items():
+        if name not in _KINDS:
+            raise ValueError(f"unknown setting {name!r}")
+        if value is not None:
+            _coerce(value, _KINDS[name])  # reject bad values before touching the file
+    path = path or writable_path()
+    with _write_lock:
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except FileNotFoundError:
+            text = file_template([])
+        try:
+            before = yaml.safe_load(text) or {}
+        except yaml.YAMLError as e:
+            raise ValueError(f"{path} does not parse ({e}); fix it by hand first") from e
+        new_text = _patch(text, section, key, values)
+        _verify(before, new_text, section, key, values)
+        target = os.path.realpath(path)  # write through a symlink, not over it
+        fd, tmp = tempfile.mkstemp(prefix=".camera_config.", dir=os.path.dirname(target),
+                                   text=True)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(new_text)
+            try:  # keep the file's permissions (mkstemp makes it owner-only)
+                mode = stat.S_IMODE(os.stat(target).st_mode)
+            except FileNotFoundError:
+                mode = 0o644
+            os.chmod(tmp, mode)
+            os.replace(tmp, target)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    logging.info(f"saved {', '.join(values)} for {section}[{key}] to {path}")
+    return path
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _patch(text: str, section: str, key: str, values: dict) -> str:
+    lines = text.splitlines()
+    header = re.compile(rf"^{section}\s*:(.*)$")
+    head = next((i for i, line in enumerate(lines) if header.match(line)), None)
+    if head is not None:
+        rest = _strip_comment(header.match(lines[head]).group(1)).strip()
+        if rest in ("{}", "null", "~"):
+            lines[head] = f"{section}:"
+        elif rest:
+            raise ValueError(f"`{section}:` is written inline; edit {key} by hand")
+    else:
+        while lines and not lines[-1].strip():
+            lines.pop()
+        lines += ["", f"{section}:"]
+        head = len(lines) - 1
+    # the section runs to the next top-level key; column-0 comments stay inside
+    end = next(
+        (i for i in range(head + 1, len(lines)) if lines[i][:1] not in ("", " ", "#")),
+        len(lines),
+    )
+    indent = next(
+        (_indent(l) for l in lines[head + 1:end]
+         if l[:1] == " " and l.strip() and not l.lstrip().startswith("#")),
+        2,
+    )
+    pad, field_pad = " " * indent, " " * (indent + 2)
+    spellings = dict.fromkeys((key, f'"{key}"', f"'{key}'", _yaml_key(key)))
+    quoted = "|".join(re.escape(k) for k in spellings)
+    key_line = re.compile(rf"^ {{{indent}}}(?:{quoted})\s*:(.*)$")
+    entry = next((i for i in range(head + 1, end) if key_line.match(lines[i])), None)
+
+    if entry is None:  # new entry at the end of the section's indented lines
+        last = max((i for i in range(head + 1, end) if lines[i][:1] == " " and lines[i].strip()),
+                   default=head)
+        block = [f"{pad}{_yaml_key(key)}:"]
+        block += [f"{field_pad}{n}: {_yaml_value(v)}" for n, v in values.items()]
+        lines[last + 1:last + 1] = block
+        return "\n".join(lines) + "\n"
+
+    inline = _strip_comment(key_line.match(lines[entry]).group(1)).strip()
+    if inline:  # `key: {label: x}` - rewrite as a block with the new values merged in
+        try:
+            current = yaml.safe_load(inline)
+        except yaml.YAMLError as e:  # an alias (*base), a tag, ...
+            raise ValueError(f"{section}[{key}] is too fancy to edit; do it by hand") from e
+        if current is None:
+            current = {}
+        if not isinstance(current, dict):
+            raise ValueError(f"{section}[{key}] is not a mapping; edit it by hand")
+        merged = {**current, **values}
+        block = [f"{pad}{_yaml_key(key)}:"]
+        block += [f"{field_pad}{n}: {_yaml_value(v)}" for n, v in merged.items()]
+        lines[entry:entry + 1] = block
+        return "\n".join(lines) + "\n"
+
+    stop = entry + 1
+    while stop < end and not (lines[stop].strip() and _indent(lines[stop]) <= indent):
+        stop += 1
+    field_indent = next(
+        (_indent(l) for l in lines[entry + 1:stop] if l.strip() and not l.lstrip().startswith("#")),
+        indent + 2,
+    )
+    field_pad = " " * field_indent
+    for name, value in values.items():
+        new_line = f"{field_pad}{name}: {_yaml_value(value)}"
+        field = re.compile(rf"^ {{{field_indent}}}{re.escape(name)}\s*:(.*)$")
+        at = next((i for i in range(entry + 1, stop) if field.match(lines[i])), None)
+        if at is None:
+            last = max((i for i in range(entry + 1, stop) if lines[i].strip()), default=entry)
+            lines.insert(last + 1, new_line)
+            stop += 1
+            continue
+        comment = _comment(field.match(lines[at]).group(1))
+        if comment and "TODO" not in comment:  # a filled-in TODO is no longer one
+            new_line += f"   {comment}"
+        lines[at] = new_line
+        while at + 1 < stop and lines[at + 1].strip() and _indent(lines[at + 1]) > field_indent:
+            del lines[at + 1]  # continuation of the old value (a block list)
+            stop -= 1
+    return "\n".join(lines) + "\n"
+
+
+def _split_comment(rest: str) -> tuple[str, str]:
+    """Split a YAML value from its trailing `# comment`, minding quotes."""
+    quote = None
+    for i, c in enumerate(rest):
+        if quote:
+            if c == quote:
+                quote = None
+        elif c in "\"'":
+            quote = c
+        elif c == "#" and (i == 0 or rest[i - 1] in " \t"):
+            return rest[:i], rest[i:]
+    return rest, ""
+
+
+def _strip_comment(rest: str) -> str:
+    return _split_comment(rest)[0]
+
+
+def _comment(rest: str) -> str:
+    return _split_comment(rest)[1].strip()
+
+
+def _yaml_key(key: str) -> str:
+    if _SAFE_KEY.match(key) and yaml.safe_load(key) == key:
+        return key
+    return json.dumps(key, ensure_ascii=False)
+
+
+def _yaml_value(value) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        text = repr(value)
+        if "e" in text:  # PyYAML only reads 2.5e-6 as a float with a dot and a signed exponent
+            mantissa, exponent = text.split("e")
+            if "." not in mantissa:
+                mantissa += ".0"
+            text = f"{mantissa}e{int(exponent):+d}"
+        return text
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_yaml_value(v) for v in value) + "]"
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def _plain(value):
+    return [_plain(v) for v in value] if isinstance(value, (list, tuple)) else value
+
+
+def _verify(before: dict, new_text: str, section: str, key: str, values: dict):
+    expected = copy.deepcopy(before)
+    if not isinstance(expected.get(section), dict):
+        expected[section] = {}
+    if not isinstance(expected[section].get(key), dict):
+        expected[section][key] = {}
+    expected[section][key].update({n: _plain(v) for n, v in values.items()})
+    try:
+        after = yaml.safe_load(new_text) or {}
+    except yaml.YAMLError as e:
+        raise ValueError(f"edit would break the file ({e}); not saved") from e
+    if after != expected:
+        raise ValueError(f"could not place {section}[{key}] cleanly; edit it by hand")
 
 
 # --------------------------------------------------------------------------- #

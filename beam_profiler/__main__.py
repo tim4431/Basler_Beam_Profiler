@@ -10,11 +10,22 @@ import sys
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        prog="beam_profiler", description="Basler Beam Profiler"
+        prog="beam_profiler",
+        description="Beam Profiler for Basler, GenICam and USB cameras",
     )
     parser.add_argument(
         "--sim", action="store_true",
-        help="use the simulated camera (fixed spot grid) instead of hardware",
+        help="start on the simulated camera (fixed spot grid) instead of hardware",
+    )
+    parser.add_argument(
+        "--camera", metavar="NAME",
+        help="camera to open first: serial number, label, model name or uid "
+             "(default: the first one found)",
+    )
+    parser.add_argument(
+        "--backends", metavar="LIST",
+        help="comma-separated camera types to look for, from: "
+             "basler, genicam, uvc (default: all; the simulator is always there)",
     )
     parser.add_argument(
         "--mode", choices=["8Bit", "16Bit"], default="16Bit", help="pixel depth"
@@ -53,10 +64,11 @@ def main(argv=None):
         handlers=[logging.StreamHandler(sys.stdout)],
     )
 
+    backends = [b.strip() for b in args.backends.split(",")] if args.backends else None
     if args.list_cameras or args.write_camera_config:
-        return list_cameras(write=args.write_camera_config)
+        return list_cameras(write=args.write_camera_config, backends=backends)
 
-    from .cameras import open_cameras
+    from .cameras import CameraManager, load_backends
 
     grid = tuple(int(v) for v in args.sim_grid.lower().split("x"))
     width, height = (int(v) for v in args.sim_size.lower().split("x"))
@@ -64,31 +76,38 @@ def main(argv=None):
         grid=grid, width=width, height=height,
         jitter=args.sim_jitter, sigma=args.sim_sigma,
     )
-    cameras = open_cameras(mode=args.mode, simulate=args.sim, **sim_opts)
+    manager = CameraManager(load_backends(backends, **sim_opts), mode=args.mode)
+    for status in manager.backend_status():
+        if status["available"]:
+            logging.info(f"camera backend {status['title']}: ready")
+        else:
+            logging.info(f"camera backend {status['title']}: off ({status['detail']})")
 
     from .ui import Viewer
 
-    Viewer(cameras).run()
+    Viewer(manager, prefer=args.camera, simulate=args.sim).run()
 
 
-def list_cameras(write: bool = False) -> int:
+def list_cameras(write: bool = False, backends: list[str] | None = None) -> int:
     """Report every connected camera and the YAML that would configure it.
 
     This is the intended way to add a model: plug the camera in, run it, paste
-    the block into `camera_config.yaml` and fill in the pixel size."""
+    the block into `camera_config.yaml` and fill in the pixel size.  (The
+    Cameras window, `k` in the viewer, does the pixel size part too.)"""
     from . import cameraconfig
-    from .cameras import probe_devices
+    from . import cameras
 
-    devices = probe_devices()
+    devices = cameras.probe_devices(backends) if backends else cameras.probe_devices()
     if not devices:
-        print("No Basler cameras found.")
+        print("No cameras found (Basler, GenICam or USB).")
         return 1
 
     config = cameraconfig.load()
     stubs, missing, unscaled = [], [], []
     for probe in devices:
         model, serial = probe["model"], probe["serial"]
-        print(f"\n{model}  (serial {serial}, {probe.get('vendor', 'unknown vendor')})")
+        via = f", via {probe['backend']}" if probe.get("backend") else ""
+        print(f"\n{model}  (serial {serial}, {probe.get('vendor') or 'unknown vendor'}{via})")
         if "error" in probe:
             print(f"  could not open: {probe['error']}")
             continue

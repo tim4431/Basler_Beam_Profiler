@@ -13,3 +13,7 @@ Flask
 # (cupy-cuda12x for CUDA 12 machines).
 # Without it everything falls back to the (slower) numpy path.
 # cupy-cuda13x
+
+# optional: non-Basler GenICam cameras (FLIR, Allied Vision, IDS, Lucid, ...).
+# Also install the camera vendor's SDK, which provides the GenTL producer.
+# harvesters>=1.4

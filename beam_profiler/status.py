@@ -10,10 +10,17 @@ from .config import STATUS_JSON_PATH
 
 
 def viewer_status(viewer) -> dict:
+    cams = getattr(viewer, "cams", None)
     return {
         "camera_model": viewer.camera.model_name,
         "camera_serial": viewer.camera.serial,
         "camera_label": viewer.camera.label,
+        "camera_uid": getattr(cams, "uid", None) or viewer.camera.uid,
+        "camera_backend": viewer.camera.backend,
+        # False while the camera is unplugged: the viewer is waiting for it to
+        # come back, and exposure/ROI below are its last known values.
+        "camera_connected": getattr(cams, "offline", None) is None,
+        "camera_offline_reason": getattr(cams, "offline", None),
         # False means no pixel_size is configured for this model, so every
         # *_um figure in the API is really a pixel count - see cameraconfig.
         "pixel_size": viewer.camera.pixel_size,

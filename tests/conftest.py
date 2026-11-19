@@ -28,3 +28,20 @@ def isolated_camera_config(monkeypatch):
     monkeypatch.setattr(cameraconfig, "_cached", cameraconfig.CameraConfigFile())
     yield
     monkeypatch.setattr(cameraconfig, "_cached", None)
+
+
+@pytest.fixture(scope="session")
+def tk_root():
+    """One hidden Tk root for the whole run, as in the app (see ui/tkhost.py):
+    Tk cannot reliably create a second root once the first is destroyed."""
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError as e:  # headless runner
+        pytest.skip(f"no Tk display: {e}")
+    root.withdraw()
+    from beam_profiler.ui import tkhost
+
+    tkhost.apply_theme(root)
+    yield root
+    root.destroy()

@@ -4,6 +4,7 @@ No pypylon here - everything under test is pure, which is the point of keeping
 per-model settings out of the driver.
 """
 
+import os
 import textwrap
 
 import pytest
@@ -361,7 +362,7 @@ def test_list_cameras_without_hardware(monkeypatch, capsys):
 
     _fake_probes(monkeypatch, [])
     assert list_cameras() == 1
-    assert "No Basler cameras found" in capsys.readouterr().out
+    assert "No cameras found" in capsys.readouterr().out
 
 
 def test_list_cameras_reports_and_offers_a_stub(monkeypatch, capsys, tmp_path):
@@ -413,3 +414,163 @@ def test_write_camera_config_never_overwrites(monkeypatch, capsys, tmp_path):
     assert list_cameras(write=True) == 1  # refuses the second time
     assert path.read_text() == before
     assert "already exists" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+#  saving from the Cameras window
+# --------------------------------------------------------------------------- #
+from beam_profiler.cameraconfig import save_entry  # noqa: E402
+
+REPO_CONFIG = os.path.join(os.path.dirname(os.path.dirname(__file__)), "camera_config.yaml")
+
+
+def _save(tmp_path, text, *args):
+    path = tmp_path / "camera_config.yaml"
+    path.write_text(textwrap.dedent(text))
+    save_entry(*args, path=str(path))
+    return path.read_text(), load(str(path))
+
+
+def test_save_adds_a_new_model_and_touches_nothing_else(tmp_path):
+    before = textwrap.dedent("""\
+        # my notes, keep me
+        defaults:
+          max_exposure: 50000   # us
+
+        cameras:
+          a2A5060-15umBAS:
+            pixel_size: 2.5e-6    # Sony IMX545
+          # a commented example
+          # acA1920-40um:
+          #   pixel_size: 5.86e-6
+
+        # serials:
+        #   "123": {label: x}
+        """)
+    text, cfg = _save(tmp_path, before, "cameras", "acA1920-40um", {"pixel_size": 5.86e-6})
+    assert resolve("acA1920-40um", "", cfg).pixel_size == 5.86e-6
+    assert resolve("a2A5060-15umBAS", "", cfg).pixel_size == 2.5e-6
+    added = [line for line in text.splitlines() if line not in before.splitlines()]
+    assert added == ["  acA1920-40um:", "    pixel_size: 5.86e-6"]
+    # inside the section, ahead of the trailing column-0 comments
+    assert text.index("acA1920-40um:\n    pixel_size") < text.index("# serials:")
+
+
+def test_save_replaces_a_value_in_place_keeping_its_comment(tmp_path):
+    text, cfg = _save(tmp_path, """\
+        cameras:
+          a2A5060-15umBAS:
+            label: old    # set by hand
+            pixel_size: null   # TODO: pixel pitch in METRES from the datasheet
+            default_exposure: 300
+        """, "cameras", "a2A5060-15umBAS", {"pixel_size": 2.5e-6, "label": "new"})
+    settings = resolve("a2A5060-15umBAS", "", cfg)
+    assert settings.pixel_size == 2.5e-6 and settings.label == "new"
+    assert settings.default_exposure == 300
+    assert '    label: "new"   # set by hand' in text
+    assert "    pixel_size: 2.5e-6\n" in text  # the filled-in TODO is dropped
+
+
+def test_save_creates_the_serials_section_with_a_quoted_key(tmp_path):
+    text, cfg = _save(tmp_path, """\
+        cameras:
+          a2A5060-15umBAS:
+            pixel_size: 2.5e-6
+        """, "serials", "40615333", {"label": "west arm"})
+    assert resolve("a2A5060-15umBAS", "40615333", cfg).label == "west arm"
+    assert '\nserials:\n  "40615333":\n    label: "west arm"\n' in text
+
+
+def test_save_finds_a_quoted_or_flow_style_entry(tmp_path):
+    text, cfg = _save(tmp_path, """\
+        cameras:
+          "Simulated-*": {exposure_line: null, label: sim}
+        serials:
+          "40615333":
+            label: west
+        """, "cameras", "Simulated-*", {"pixel_size": 3.45e-6})
+    settings = resolve("Simulated-4x4", "", cfg)
+    assert settings.pixel_size == 3.45e-6 and settings.label == "sim"
+    assert settings.exposure_line is None
+    _, cfg = _save(tmp_path, text, "serials", "40615333", {"label": "east"})
+    assert resolve("x", "40615333", cfg).label == "east"
+    assert resolve("Simulated-4x4", "", cfg).pixel_size == 3.45e-6
+
+
+def test_save_into_an_empty_or_missing_file(tmp_path):
+    path = tmp_path / "camera_config.yaml"
+    save_entry("cameras", "HD Webcam", {"pixel_size": 3.0e-6}, path=str(path))
+    cfg = load(str(path))
+    assert resolve("HD Webcam", "", cfg).pixel_size == 3.0e-6
+    assert "defaults:" in path.read_text()  # created from the documented template
+    assert '"HD Webcam":' in path.read_text()  # a space needs quoting
+
+
+def test_save_refuses_rather_than_corrupting(tmp_path):
+    path = tmp_path / "camera_config.yaml"
+    broken = "cameras:\n  a2A: [unclosed\n"
+    path.write_text(broken)
+    with pytest.raises(ValueError):
+        save_entry("cameras", "a2A", {"pixel_size": 1e-6}, path=str(path))
+    assert path.read_text() == broken
+    path.write_text("cameras:\n  x:\n    pixel_size: 1e-6\n")
+    with pytest.raises(ValueError):  # validated before the file is opened
+        save_entry("cameras", "x", {"pixel_size": -2.0}, path=str(path))
+    with pytest.raises(ValueError):
+        save_entry("cameras", "x", {"not_a_setting": 1}, path=str(path))
+    assert path.read_text() == "cameras:\n  x:\n    pixel_size: 1e-6\n"
+
+
+def test_save_against_the_shipped_config(tmp_path):
+    """The real camera_config.yaml, comments and all, takes both kinds of edit."""
+    original = open(REPO_CONFIG, encoding="utf-8").read()
+    path = tmp_path / "camera_config.yaml"
+    path.write_text(original)
+    save_entry("cameras", "Emulation", {"pixel_size": 4.8e-6}, path=str(path))
+    save_entry("serials", "0815-0000", {"label": "bench emulator"}, path=str(path))
+    save_entry("cameras", "a2A4504-18umBAS", {"pixel_size": 2.74e-6}, path=str(path))
+    cfg = load(str(path))
+    assert resolve("Emulation", "0815-0000", cfg).pixel_size == 4.8e-6
+    assert resolve("Emulation", "0815-0000", cfg).label == "bench emulator"
+    old_lines = original.splitlines()
+    new_lines = path.read_text().splitlines()
+    assert [line for line in old_lines if line not in new_lines] == []  # nothing lost
+    assert len(new_lines) - len(old_lines) == 6  # 2 + 4 (serials: header, blank, key, label)
+
+
+def test_save_keeps_permissions_and_symlinks(tmp_path):
+    real = tmp_path / "real.yaml"
+    real.write_text("cameras:\n  x:\n    label: a\n")
+    real.chmod(0o664)
+    link = tmp_path / "camera_config.yaml"
+    link.symlink_to(real)
+    save_entry("cameras", "x", {"pixel_size": 2e-6}, path=str(link))
+    assert link.is_symlink() and "pixel_size: 2.0e-6" in real.read_text()
+    assert (real.stat().st_mode & 0o777) == 0o664
+
+
+def test_save_matches_a_key_it_had_to_escape(tmp_path):
+    path = tmp_path / "camera_config.yaml"
+    path.write_text("cameras:\n")
+    for value in (1e-6, 2e-6):
+        save_entry("cameras", 'odd "name"', {"pixel_size": value}, path=str(path))
+    assert path.read_text().count("odd") == 1  # updated, not appended twice
+    assert resolve('odd "name"', "", load(str(path))).pixel_size == 2e-6
+
+
+def test_save_refuses_an_alias_with_a_value_error(tmp_path):
+    path = tmp_path / "camera_config.yaml"
+    path.write_text("defaults: &base {label: a}\ncameras:\n  x: *base\n")
+    with pytest.raises(ValueError):
+        save_entry("cameras", "x", {"pixel_size": 1e-6}, path=str(path))
+
+
+def test_pixel_size_is_saved_where_it_takes_effect(tmp_path):
+    from beam_profiler.ui.cameras_window import CamerasWindow
+
+    path = tmp_path / "camera_config.yaml"
+    path.write_text('serials:\n  "123":\n    pixel_size: 3.45e-6\n')
+    row = {"serial": "123", "model": "M"}
+    assert CamerasWindow._pixel_size_home(row, str(path)) == ("serials", "123")
+    assert CamerasWindow._pixel_size_home({"serial": "9", "model": "M"}, str(path)) == (
+        "cameras", "M")

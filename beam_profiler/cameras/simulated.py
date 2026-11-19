@@ -8,13 +8,45 @@ import numpy as np
 
 from .. import cameraconfig
 from ..synthetic import Spot, render, spot_grid
-from .base import Camera
+from .base import Backend, Camera, DeviceInfo
 
 REFERENCE_EXPOSURE_US = 200  # exposure at which spots hit their nominal amplitude
 NOISE_BANK_FRAMES = 8
+SIM_SERIAL = "SIM-0001"
+
+
+class SimulatedBackend(Backend):
+    """Always present, so there is something to look at with no hardware and
+    the Cameras window always has an entry to fall back to."""
+
+    name = "sim"
+    title = "Simulator"
+    auto_open = False  # used as the fallback, never chosen over real hardware
+
+    def __init__(self, **sim_opts):
+        self.sim_opts = sim_opts
+
+    def _model(self) -> str:
+        grid = self.sim_opts.get("grid", (4, 4))
+        return f"Simulated-{grid[0]}x{grid[1]}"
+
+    def enumerate(self, full: bool = False) -> list[DeviceInfo]:
+        return [DeviceInfo(self.name, self._model(), SIM_SERIAL, "beam_profiler")]
+
+    def open(self, info: DeviceInfo, mode: str) -> Camera:
+        cam = SimulatedCamera(mode=mode, **self.sim_opts)
+        cam.device = info
+        return cam
+
+    def probe(self, info: DeviceInfo) -> dict:
+        width = self.sim_opts.get("width", 1200)
+        height = self.sim_opts.get("height", 1200)
+        return {**super().probe(info), "backend": self.name, "sensor_size": (width, height)}
 
 
 class SimulatedCamera(Camera):
+    backend = "sim"
+
     def __init__(
         self,
         mode: str = "16Bit",
@@ -28,15 +60,13 @@ class SimulatedCamera(Camera):
         seed: int | None = 0,
     ):
         self.model_name = f"Simulated-{grid[0]}x{grid[1]}"
-        self.serial = "SIM-0001"
+        self.serial = SIM_SERIAL
         self.W, self.H = width, height
         # Resolved through camera_config.yaml like any real camera, so the file
         # can be exercised without hardware; `pixel_size` is the fallback when
         # no `Simulated*` entry configures one.
-        settings = cameraconfig.resolve(self.model_name, self.serial, warn=False)
-        if not settings.pixel_size_known:
-            settings = settings.replace(pixel_size=pixel_size)
-        super().__init__(mode, settings)
+        self._fallback_pixel_size = pixel_size
+        super().__init__(mode, self._resolve())
         if sigma is None:
             # beam waist (~2 sigma) defaults to 1/5 of the spot pitch
             pitch = min(width, height) / (max(grid) + 1)
@@ -46,15 +76,24 @@ class SimulatedCamera(Camera):
         self._rng = np.random.default_rng(seed)
         self._roi = (width, height, 0, 0)
         self._exposure = float(
-            np.clip(settings.default_exposure, self.min_exposure, self.max_exposure)
+            np.clip(self.settings.default_exposure, self.min_exposure, self.max_exposure)
         )
-        self._gain = float(settings.default_gain)
+        self._gain = float(self.settings.default_gain)
         # pre-generated readout noise, cycled per frame: cheaper than drawing
         # millions of fresh normal samples at 60 fps
         self._noise_bank = self._rng.normal(
             0.0, noise * self.saturation, (NOISE_BANK_FRAMES, height, width)
         ).astype(np.int16)
         self._noise_idx = 0
+
+    def _resolve(self):
+        settings = cameraconfig.resolve(self.model_name, self.serial, warn=False)
+        if not settings.pixel_size_known:
+            settings = settings.replace(pixel_size=self._fallback_pixel_size)
+        return settings
+
+    def reload_settings(self):
+        self.apply_settings(self._resolve())
 
     # ------------------------------ properties --------------------------- #
     @property

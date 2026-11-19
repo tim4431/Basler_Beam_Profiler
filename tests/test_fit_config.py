@@ -147,17 +147,12 @@ def test_describe_mentions_the_mode(iters):
 #  the settings window, driven without showing it
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
-def window():
-    """One Tk root for the whole module - Tk cannot reliably create a second."""
-    tk = pytest.importorskip("tkinter")
+def window(tk_root):
     from beam_profiler.ui.settings import SettingsWindow
 
     win = SettingsWindow()
-    try:
-        win._build()
-    except tk.TclError as e:  # headless runner
-        pytest.skip(f"no Tk display: {e}")
-    win._root.withdraw()
+    win.build(tk_root)
+    win.win.withdraw()
     yield win
     win.destroy()
 
