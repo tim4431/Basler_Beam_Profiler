@@ -26,7 +26,9 @@ formatting are kept — and the change applies immediately.
 If the app started with no camera attached it shows the simulator, and
 switches to the first real camera you plug in. Once you have picked a camera
 yourself (or started with `--sim` or `--camera`), new cameras are announced
-but not switched to.
+but not switched to. A camera that takes more than two seconds to open (a
+Tucsen takes about seven) does so behind the window: the simulator shows,
+under *Connecting to …*, until the camera is ready.
 
 ## Adding a camera from the command line
 
@@ -160,6 +162,7 @@ than to the model.
 | --- | --- | --- |
 | **Basler (pylon)** | every Basler camera | the pylon SDK and `pip install pypylon` (in `requirements.txt`) |
 | **GenICam (harvesters)** | FLIR/Teledyne, Allied Vision, IDS, Lucid, Daheng, Hikrobot, Baumer, ... | `pip install "harvesters>=1.4"` plus the vendor's SDK, which installs the GenTL producer (`.cti`) and puts it on `GENICAM_GENTL64_PATH` |
+| **Tucsen (TUCam)** | Tucsen Dhyana, FL, Aries, Libra, ... over USB 3.0 or CameraLink (FireBird card); Linux | libTUCam, and the `tucsen` package from [tucsen-camera-driver](https://github.com/tim4431/tucsen-camera-driver): `./setup.sh --tucsen=<checkout>` |
 | **USB video (UVC)** | webcams, USB microscopes, cheap USB beam cameras | nothing extra (OpenCV) |
 | **Simulator** | a synthetic spot grid | nothing |
 
@@ -177,6 +180,34 @@ Notes per type:
   pypylon is installed, so Basler cameras are not listed twice. This backend
   follows the harvesters 1.4 API but has not yet been run against real
   non-Basler hardware — report what happens on yours.
+- **Tucsen** cameras go through the `tucsen` package, which wraps libTUCam
+  and works around its defects (above all, a frame wait that ignores its
+  timeout). Install libTUCam with that repository's
+  `sudo ./linux-setup/install_tucsen_linux.sh` (plus
+  `install_firebird_linux.sh` for CameraLink), then
+  `./setup.sh --tucsen=<checkout>` or
+  `.venv/bin/pip install <checkout>/python`. Differences from a Basler:
+  - `Gain` is the camera's gain *mode*, not dB. On the Dhyana 4040 V2: 0 HDR
+    (the default, widest range), 1 High gain, 2 Low gain, 3-5 the same
+    without the SDK's corrections. Every mode gives full-scale 16-bit data.
+  - Exposure moves in the SDK's steps (10.32 µs on the Dhyana 4040 V2), and
+    ROI offsets and sizes in multiples of 4 (at least 48 px wide).
+  - Software trigger by default, so every frame is exposed after the last
+    change. Full frames then run at about 6 fps over USB instead of 9.5;
+    `trigger_mode: "off"` free-runs. ROIs run at 50+ fps either way.
+  - No I/O lines are driven.
+  - Opening takes about 7 s; at start-up the simulator shows meanwhile.
+  - Only one program can have the camera. When another one has it (most
+    often a second copy of this app, from a second click on the icon), the
+    error names it - *in use by another copy of the beam profiler (PID …)* -
+    and the camera is picked up by itself within about 20 s of being freed.
+  - USB plugging and unplugging is followed. A CameraLink camera that drops
+    out gets one reopen attempt, then needs *Rescan*. Use one interface at a
+    time: with USB plugged in, the camera does not answer on CameraLink.
+  - The SDK keeps the camera's own settings (fan speed, ...) in
+    `~/.config/tucsen/`, shared with other scripts that use the package.
+  - It prints its own diagnostic lines (`[OpenPhxCore]...`) whenever it scans
+    or opens. They are harmless.
 - **USB video** cameras are 8-bit and often colour; frames are converted to
   mono, 16-bit mode shifts them to the top byte, and the ROI is cropped in
   software. Exposure control depends on the OS driver. They are never opened

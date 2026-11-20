@@ -6,6 +6,8 @@
 #   ./setup.sh --no-gpu   # skip CuPy
 #   ./setup.sh --dev      # also install pytest/pyinstaller
 #   ./setup.sh --launcher # only (re)install the desktop/app-menu launcher
+#   ./setup.sh --tucsen=DIR  # also the `tucsen` package from a tucsen-camera-driver
+#                            # checkout (Tucsen cameras; libTUCam must be installed)
 #   PYTHON=python3.12 ./setup.sh   # pick the interpreter (needs 3.10+)
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
@@ -14,13 +16,15 @@ PY="${PYTHON:-python3}"
 GPU=auto
 DEV=0
 LAUNCHER_ONLY=0
+TUCSEN=""
 for arg in "$@"; do
     case "$arg" in
         --no-gpu) GPU=0 ;;
         --gpu)    GPU=1 ;;
         --dev)    DEV=1 ;;
         --launcher) LAUNCHER_ONLY=1 ;;
-        -h|--help) sed -n 2,10p "$0"; exit 0 ;;
+        --tucsen=*) TUCSEN="${arg#--tucsen=}" ;;
+        -h|--help) sed -n 2,11p "$0"; exit 0 ;;
         *) echo "unknown option: $arg" >&2; exit 2 ;;
     esac
 done
@@ -106,6 +110,11 @@ if [ "$GPU" = 1 ]; then
     echo ">> NVIDIA GPU found, installing $pkg (optional)"
     "$VPY" -m pip install -q "$pkg" \
         || echo "   warning: $pkg failed to install; the CPU path will be used"
+fi
+if [ -n "$TUCSEN" ]; then
+    echo ">> installing the tucsen package from $TUCSEN/python"
+    "$VPY" -m pip install -q "$TUCSEN/python" \
+        || echo "   warning: tucsen failed to install; is libTUCam installed? (docs/cameras.md)"
 fi
 if [ "$DEV" = 1 ]; then
     echo ">> installing dev tools"

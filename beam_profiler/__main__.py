@@ -115,7 +115,7 @@ def list_cameras(write: bool = False, backends: list[str] | None = None) -> int:
 
     devices = cameras.probe_devices(backends) if backends else cameras.probe_devices()
     if not devices:
-        print("No cameras found (Basler, GenICam or USB).")
+        print("No cameras found (Basler, GenICam, Tucsen or USB).")
         return 1
 
     config = cameraconfig.load()
@@ -137,7 +137,7 @@ def list_cameras(write: bool = False, backends: list[str] | None = None) -> int:
             if key in probe:
                 value = probe[key]
                 if isinstance(value, (list, tuple)):
-                    value = ", ".join(str(v) for v in value)
+                    value = ", ".join(str(v) for v in value) or "none"
                 print(f"  {label:22} {value}")
 
         known = model in config.cameras or serial in config.serials

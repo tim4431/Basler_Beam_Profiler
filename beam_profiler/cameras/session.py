@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import time
-from concurrent.futures import Future
+from concurrent.futures import Future, wait
 from typing import Callable
 
 import numpy as np
@@ -30,6 +30,9 @@ from .base import Camera, CameraDisconnected
 from .manager import CameraManager
 
 RETRY_S = 3.0  # between attempts to reopen a camera that is present but will not open
+# The window opens when start() returns.  A camera slower to open than this
+# (a Tucsen takes ~7 s) finishes behind it, while the simulator stands in.
+STARTUP_WAIT_S = 2.0
 
 
 class CameraSession:
@@ -53,6 +56,10 @@ class CameraSession:
         self._states: dict[str, dict] = {}
         self._pending: tuple[str, Future, bool] | None = None  # (uid, future, quiet)
         self._target: str | None = None  # the camera the session should end up on
+        # While a slow camera opens at start-up: the cameras still to try if it
+        # fails, and auto_select for when start-up ends on the simulator.
+        self._startup: list[str] | None = None
+        self._follow = False
         self._restoring = False
         self._retry_at = 0.0
         self._last_error_log = 0.0
@@ -60,7 +67,14 @@ class CameraSession:
     # ------------------------------ start-up ------------------------------ #
     def start(self, prefer: str | None = None, simulate: bool = False):
         """Scan, then open the first camera that works: the one asked for, else
-        the first real camera, else the simulator."""
+        the first real camera, else the simulator.
+
+        The window appears when this returns, so a camera still opening after
+        STARTUP_WAIT_S is not waited for: the simulator shows, under
+        "Connecting to ...", and the camera takes over when it is ready, as in
+        a switch.  Seven seconds of nothing while a Tucsen opened looked like
+        a launch that had failed, and the second click started another copy
+        of the app, which then found the camera taken."""
         self.manager.start()
         snapshot = self.manager.snapshot()
         sim = [d["uid"] for d in snapshot if d["backend"] == "sim"]
@@ -71,17 +85,50 @@ class CameraSession:
             logging.warning(f"--camera {prefer!r} matches no connected camera")
         if wanted:
             candidates = [wanted] + [u for u in candidates if u != wanted]
-        for uid in candidates:
+        follow = not (simulate or wanted)  # on the simulator: take the next camera plugged in
+        cut = next((i for i, uid in enumerate(candidates) if uid in sim), len(candidates))
+        cameras, fallback = candidates[:cut], candidates[cut:]
+        deadline = time.monotonic() + STARTUP_WAIT_S
+        while cameras:
+            uid = cameras.pop(0)
+            future = self.manager.open_async(uid)
+            wait([future], timeout=max(0.0, deadline - time.monotonic()))
+            if not future.done():  # slow: open the window on the simulator meanwhile
+                logging.info(f"{self.manager.label(uid)} is still opening: "
+                             "showing the simulator until it is ready")
+                self._open_first(fallback, announce=False)
+                self.auto_select = False  # a camera plugged in meanwhile must not cut in
+                self._startup, self._follow = cameras, follow
+                self._pending, self._target = (uid, future, False), uid
+                return
+            try:
+                camera = future.result()
+            except Exception as e:
+                self._open_failed(uid, e)
+                continue
+            self._activate(uid, camera)
+            return
+        self._open_first(fallback)
+        self.auto_select = follow
+
+    def _open_first(self, uids: list[str], announce: bool = True):
+        """Open the first of `uids` that works, on this thread."""
+        for uid in uids:
             try:
                 camera = self.manager.open_sync(uid)
             except Exception as e:
-                self.manager.set_state(uid, "error", str(e))
-                self._notify(f"Could not open {self.manager.label(uid)}: {e}", "error")
+                self._open_failed(uid, e)
                 continue
-            self._activate(uid, camera)
-            self.auto_select = not (simulate or wanted) and uid in sim
+            self._activate(uid, camera, announce)
             return
         raise RuntimeError("no camera could be opened, not even the simulator")
+
+    def _open_failed(self, uid: str, e: Exception, quiet: bool = False):
+        self.manager.set_state(uid, "error", str(e))
+        message = f"Could not open {self.manager.label(uid)}: {e}"
+        logging.warning(message)
+        if not quiet:
+            self._notify(message, "error")
 
     # ------------------------------ per frame ----------------------------- #
     @property
@@ -153,6 +200,7 @@ class CameraSession:
         still in flight for another camera is released when it finishes."""
         if explicit:
             self.auto_select = False
+            self._startup = None  # the user's choice replaces start-up's list
         if self.manager.entry(uid) is None:
             self._notify(f"Unknown camera {uid}", "error")
             return
@@ -193,13 +241,14 @@ class CameraSession:
                 self._retry_at = time.monotonic() + RETRY_S
                 logging.info(f"reconnect to {self.manager.label(uid)} failed: {e}")
             else:
-                self.manager.set_state(uid, "error", str(e))
-                message = f"Could not open {self.manager.label(uid)}: {e}"
-                logging.warning(message)
-                if not quiet:
-                    self._notify(message, "error")
+                self._open_failed(uid, e, quiet)
                 if self._target == uid:
                     self._target = self.uid  # stay where we are
+                    if self._startup:  # start-up: on to the next camera
+                        self._target = self._startup.pop(0)
+                    elif self._startup is not None:  # none left: settle on the simulator
+                        self._startup = None
+                        self.auto_select = self._follow
         else:
             if uid == self._target:
                 self._activate(uid, camera)
@@ -208,7 +257,7 @@ class CameraSession:
         if self._target is not None and self._target != self.uid:
             self._begin_open(self._target)
 
-    def _activate(self, uid: str, camera: Camera):
+    def _activate(self, uid: str, camera: Camera, announce: bool = True):
         old_uid, old = self.uid, self.camera
         reconnect = uid == old_uid
         if old is not None and not reconnect:
@@ -217,6 +266,7 @@ class CameraSession:
             self.manager.release(old_uid, old)
         self.camera, self.uid, self.offline = camera, uid, None
         self._target = uid
+        self._startup = None
         if camera.backend != "sim":
             self.auto_select = False  # a real camera is showing: stop following
         self.manager.set_active(uid, camera)
@@ -231,7 +281,8 @@ class CameraSession:
         if self.offline:  # dropped again while being set up
             return
         logging.info(f"{'Reconnected' if reconnect else 'Using'} {camera.label} ({uid})")
-        self._notify(f"{'Reconnected' if reconnect else 'Now showing'} {camera.label}", "info")
+        if announce:
+            self._notify(f"{'Reconnected' if reconnect else 'Now showing'} {camera.label}", "info")
 
     def _save_state(self, uid: str, camera: Camera):
         """Remember the viewer's state for this camera, to restore on return."""

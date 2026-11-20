@@ -17,6 +17,10 @@ Pillow>=10.1
 # Without it everything falls back to the (slower) numpy path.
 # cupy-cuda13x
 
+# optional: Tucsen cameras (Linux).  Not on PyPI: install libTUCam, then the
+# `tucsen` package from a tucsen-camera-driver checkout -
+# ./setup.sh --tucsen=<checkout>   (or: pip install <checkout>/python)
+
 # optional: non-Basler GenICam cameras (FLIR, Allied Vision, IDS, Lucid, ...).
 # Also install the camera vendor's SDK, which provides the GenTL producer.
 # harvesters>=1.4

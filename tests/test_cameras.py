@@ -262,6 +262,57 @@ def test_a_camera_that_will_not_open_falls_through_to_the_next():
     assert h.state("fake:A") == "error" and "cannot open" in h.manager.entry("fake:A").error
 
 
+def test_a_slow_camera_finishes_opening_behind_the_window(monkeypatch):
+    """A Tucsen takes ~7 s to open.  The window must not wait for it: that
+    long with nothing on screen looks like a failed launch, and a second click
+    starts another copy of the app, which then finds the camera taken."""
+    monkeypatch.setattr(session_mod, "STARTUP_WAIT_S", 0.05)
+    h = Harness()
+    h.fake.plug("A")
+    h.fake.gate = threading.Event()  # A takes its time
+    h.session.start()
+    assert h.uid == SIM and h.session.connecting == "FakeCam"
+    assert h.notes == []  # the stand-in is not news
+    h.fake.plug("B")  # plugged in meanwhile: must not cut in
+    h.manager.scan_now()
+    h.session.service()
+    h.fake.gate.set()
+    h.settle()
+    assert h.uid == "fake:A" and not h.session.auto_select
+    assert h.state("fake:B") == "available"
+    assert ("info", "Now showing FakeCam") in h.notes
+
+
+def test_a_slow_camera_that_fails_at_start_falls_through_to_the_next(monkeypatch):
+    monkeypatch.setattr(session_mod, "STARTUP_WAIT_S", 0.05)
+    h = Harness()
+    h.fake.plug("A")
+    h.fake.plug("B")
+    h.fake.refuse.add("A")
+    h.fake.gate = threading.Event()
+    h.session.start()
+    h.fake.gate.set()
+    h.settle()
+    assert h.uid == "fake:B" and h.state("fake:A") == "error"
+    assert any(level == "error" and "Could not open" in text for level, text in h.notes)
+
+
+def test_a_slow_camera_that_fails_alone_leaves_the_simulator_following(monkeypatch):
+    monkeypatch.setattr(session_mod, "STARTUP_WAIT_S", 0.05)
+    h = Harness()
+    h.fake.plug("A")
+    h.fake.refuse.add("A")
+    h.fake.gate = threading.Event()
+    h.session.start()
+    assert not h.session.auto_select  # nothing may cut in while A opens ...
+    h.fake.gate.set()
+    h.settle()
+    assert h.uid == SIM and h.session.auto_select  # ... but now, as after a quick failure
+    h.fake.plug("C")
+    h.settle()
+    assert h.uid == "fake:C"
+
+
 # --------------------------------------------------------------------------- #
 #  unplug and reconnect
 # --------------------------------------------------------------------------- #
@@ -737,3 +788,264 @@ def test_uvc_without_sysfs_notices_an_unplugged_camera(monkeypatch):
     assert backend.enumerate() == []  # gone - not "present but failing" forever
     present.add(0)
     assert [d.address for d in backend.enumerate()] == ["0"]  # and back
+
+
+# --------------------------------------------------------------------------- #
+#  Tucsen (TUCam SDK, through the `tucsen` package)
+# --------------------------------------------------------------------------- #
+class FakeTucam:
+    """Stands in for the `tucsen` package: cameras by SDK index, a sysfs tree
+    for the USB ones, and a count of SDK scans (each one an Api_Init)."""
+
+    W, H, STEP_MS = 256, 192, 0.01032
+
+    class TucamError(RuntimeError):
+        def __init__(self, name):
+            super().__init__(name)
+            self.name = name
+
+    def __init__(self, sysfs):
+        self.sysfs = sysfs
+        self.devices: list[dict] = []
+        self.scans = 0
+        self.opened: list = []
+        fake = self
+
+        class Camera:
+            def __init__(cam, index):
+                visible = fake.visible()
+                if index >= len(visible):
+                    raise fake.TucamError("TUCAMRET_OUT_OF_RANGE")
+                d = visible[index]
+                if d.get("held"):  # another process has it
+                    raise fake.TucamError("TUCAMRET_FAILOPEN_CAMERA")
+                cam.model, cam.bus, cam.serial = d["model"], d["bus"], d["serial"] or None
+                cam.binning = 2  # left over in the SDK's settings file
+                cam._roi = (0, 0, fake.W // 2, fake.H // 2)
+                cam.exposure_ms_ = 10.0
+                cam.gain, cam.mode, cam.triggers = 0, None, 0
+                cam.timeouts, cam.closed, cam.device = False, False, d
+                fake.opened.append(cam)
+
+            def describe(cam, name):
+                if name == "EXPOSURETM":
+                    return {"min": fake.STEP_MS, "max": 3.6e6, "step": fake.STEP_MS,
+                            "value": cam.exposure_ms_}
+                return {"min": 0, "max": 5, "step": 1, "value": cam.gain}
+
+            exposure_ms = property(
+                lambda cam: cam.exposure_ms_,
+                lambda cam, ms: setattr(cam, "exposure_ms_", round(ms / fake.STEP_MS) * fake.STEP_MS),
+            )
+
+            def get(cam, name):
+                return float(cam.gain)
+
+            def set(cam, name, value):
+                cam.gain = int(value)
+
+            @property
+            def roi(cam):
+                return cam._roi
+
+            @roi.setter
+            def roi(cam, value):
+                x, y, w, h = value if value is not None else (0, 0, fake.W, fake.H)
+                if any(v % 4 for v in (x, y, w, h)) or x + w > fake.W or y + h > fake.H:
+                    raise ValueError(f"bad ROI {value}")  # what the real package raises
+                cam._roi = (x, y, w, h)
+
+            def start(cam, mode="sequence"):
+                cam.mode = mode
+
+            def software_trigger(cam):
+                cam.triggers += 1
+
+            def grab(cam, timeout=5.0):
+                cam.last_timeout = timeout
+                if cam.timeouts or cam.device not in fake.devices:
+                    raise fake.TucamError("TUCAMRET_TIMEOUT")
+                _, _, w, h = cam._roi
+                return np.full((h, w), 1000, np.uint16)
+
+            def close(cam):
+                cam.closed = True
+
+        self.Camera = Camera
+        (sysfs / "usb1").mkdir(parents=True)  # a root hub: not Tucsen
+        (sysfs / "usb1" / "idVendor").write_text("1d6b\n")
+
+    def visible(self):
+        return [d for d in self.devices if d["visible"]]
+
+    def list_cameras(self):
+        self.scans += 1
+        return [{"index": i, "model": d["model"], "bus": d["bus"], "product": 0}
+                for i, d in enumerate(self.visible())]
+
+    def plug(self, bus="USB 3.0", model="FakeDhyana", serial="KB1", visible=True):
+        d = {"model": model, "bus": bus, "serial": serial if bus != "CameraLink" else "",
+             "visible": visible, "node": None}
+        if bus.startswith("USB"):
+            d["node"] = self.sysfs / f"10-{len(self.devices) + 1}"
+            d["node"].mkdir()
+            (d["node"] / "idVendor").write_text("5453\n")
+            (d["node"] / "busnum").write_text("10\n")
+            (d["node"] / "devnum").write_text(f"{len(self.devices) + 6}\n")
+            (self.sysfs / f"{d['node'].name}:1.0").mkdir()  # an interface: skipped
+        self.devices.append(d)
+        return d
+
+    def unplug(self, d):
+        self.devices.remove(d)
+        if d["node"] is not None:
+            for f in d["node"].iterdir():
+                f.unlink()
+            d["node"].rmdir()
+
+
+@pytest.fixture
+def tucsen(monkeypatch, tmp_path):
+    import sys
+
+    fake = FakeTucam(tmp_path / "usb")
+    monkeypatch.setitem(sys.modules, "tucsen", fake)  # importable without the SDK
+    from beam_profiler.cameras import tucsen as mod
+
+    monkeypatch.setattr(mod, "tucam", fake)
+    return mod, fake, mod.TucsenBackend(sysfs=str(fake.sysfs))
+
+
+def test_tucsen_asks_the_sdk_only_when_something_changed(tucsen):
+    mod, fake, backend = tucsen
+    fake.plug()
+    assert [d.uid for d in backend.enumerate(full=True)] == ["tucsen:0"]
+    for _ in range(3):
+        backend.enumerate()
+    assert fake.scans == 1  # nothing changed on the bus: no Api_Init every 2 s
+
+    cam = backend.open(backend.enumerate()[0], "16Bit")
+    fake.plug()  # a second one arrives while the first is open
+    assert len(backend.enumerate(full=True)) == 1 and fake.scans == 1  # SDK left alone
+    cam.close()
+    assert len(backend.enumerate()) == 2 and fake.scans == 2  # bus changed: looked again
+
+
+def test_tucsen_waits_a_few_scans_for_a_usb_camera_the_sdk_cannot_see_yet(tucsen):
+    mod, fake, backend = tucsen
+    d = fake.plug(visible=False)  # on the bus, but udev is still setting permissions
+    assert backend.enumerate(full=True) == []
+    d["visible"] = True
+    assert len(backend.enumerate()) == 1 and fake.scans == 2
+
+    fake.plug(visible=False)  # one that never shows up stops costing scans
+    for _ in range(10):
+        backend.enumerate()
+    assert fake.scans == 2 + mod.USB_RETRIES
+
+
+def test_tucsen_maps_exposure_gain_and_roi_onto_the_sdk(tucsen):
+    mod, fake, backend = tucsen
+    fake.plug()
+    cam = backend.open(backend.enumerate(full=True)[0], "16Bit")
+    sdk = fake.opened[-1]
+    assert (cam.W, cam.H) == (fake.W, fake.H) and sdk.binning == 1  # full sensor, unbinned
+    assert cam.serial == "KB1" and cam.software_trigger and sdk.mode == "software"
+
+    cam.ExposureTime = 1234.5  # us in, ms to the SDK, on its 10.32 us grid
+    assert cam.ExposureTime == pytest.approx(1238.4)
+    cam.ExposureTime = 31
+    cam.ExposureTime = 31 * 1.1  # an auto-exposure step smaller than one SDK step
+    assert cam.ExposureTime == pytest.approx(41.28)  # still moves
+    cam.ExposureTime = 5
+    assert cam.ExposureTime == pytest.approx(30.96)  # never under min_exposure (30)
+    cam.Gain = 1.4
+    assert cam.Gain == 1 and sdk.gain == 1  # a mode index
+    cam.Gain = 9
+    assert cam.Gain == 5
+
+    cam.ROI = (101, 51, 13, 7)  # (w, h, ox, oy) -> multiples of 4 as (x, y, w, h)
+    assert sdk.roi == (12, 4, 100, 48) and cam.ROI == (100, 48, 12, 4)
+    frame = cam.grab_image()
+    assert frame.shape == (48, 100) and frame.dtype == np.uint16 and sdk.triggers == 1
+    assert sdk.last_timeout == pytest.approx(1.0 + cam.ExposureTime / 1e6)
+    cam.ROI = (10, 10, 250, 190)  # too small, past the corner
+    assert cam.ROI == (mod.MIN_ROI, mod.MIN_ROI, fake.W - mod.MIN_ROI, fake.H - mod.MIN_ROI)
+    cam.close()
+    assert sdk.closed and backend._open == 0
+
+    cam8 = backend.open(backend.enumerate()[0], "8Bit")
+    assert cam8.grab_image().dtype == np.uint8 and cam8.grab_image().max() == 1000 >> 8
+    cam8.close()
+
+
+def test_tucsen_usb_unplug_is_a_disconnect_but_a_timeout_is_not(tucsen):
+    from beam_profiler.cameras.base import MAX_CONSECUTIVE_FAILURES, CameraDisconnected
+
+    mod, fake, backend = tucsen
+    usb = fake.plug()
+    cam = backend.open(backend.enumerate(full=True)[0], "16Bit")
+    fake.opened[-1].timeouts = True  # missed frames, camera still on the bus
+    for _ in range(MAX_CONSECUTIVE_FAILURES + 2):
+        assert cam.grab_image() is None
+    assert cam.is_connected()
+    fake.unplug(usb)
+    with pytest.raises(CameraDisconnected):
+        cam.grab_image()
+    cam.close()
+
+    fake.plug(bus="CameraLink")  # no bus to ask: a run of failures decides
+    cam = backend.open(backend.enumerate()[0], "16Bit")
+    fake.opened[-1].timeouts = True
+    for _ in range(MAX_CONSECUTIVE_FAILURES - 1):
+        assert cam.grab_image() is None
+    with pytest.raises(CameraDisconnected):
+        cam.grab_image()
+
+
+def test_tucsen_failed_open_makes_the_next_scan_look_again(tucsen):
+    mod, fake, backend = tucsen
+    d = fake.plug(bus="CameraLink")
+    info = backend.enumerate(full=True)[0]
+    fake.unplug(d)  # switched off: nothing changes on the USB bus
+    assert backend.enumerate() == [info] and fake.scans == 1
+    with pytest.raises(fake.TucamError):
+        backend.open(info, "16Bit")
+    assert backend._open == 0
+    assert backend.enumerate() == [] and fake.scans == 2
+
+
+def test_tucsen_open_names_the_program_that_has_the_camera(tucsen, tmp_path, monkeypatch):
+    """The SDK answers a second copy of the app with TUCAMRET_FAILOPEN_CAMERA
+    only; the error says who has the camera instead."""
+    mod, fake, backend = tucsen
+    d = fake.plug()
+    info = backend.enumerate(full=True)[0]
+    d["held"] = True
+    with pytest.raises(fake.TucamError):  # nothing on the bus says it is taken: the SDK's word
+        backend.open(info, "16Bit")
+
+    # What Linux shows while another process has it: the interface bound to
+    # usbfs, and that process holding the device node open.
+    (tmp_path / "drivers" / "usbfs").mkdir(parents=True)
+    (fake.sysfs / f"{d['node'].name}:1.0" / "driver").symlink_to(tmp_path / "drivers" / "usbfs")
+    node = tmp_path / "dev" / "010" / "006"
+    node.parent.mkdir(parents=True)
+    node.touch()
+    proc = tmp_path / "proc"
+    (proc / "4242" / "fd").mkdir(parents=True)
+    (proc / "4242" / "fd" / "9").symlink_to(node)
+    (proc / "4242" / "cmdline").write_text("/lab/.venv/bin/python\0-m\0beam_profiler\0")
+    (proc / "self").mkdir()
+    monkeypatch.setattr(mod, "USB_DEVFS", str(tmp_path / "dev"))
+    monkeypatch.setattr(mod, "PROC", str(proc))
+    with pytest.raises(RuntimeError, match=r"^in use by another copy of the beam profiler \(PID 4242\)$"):
+        backend.open(info, "16Bit")
+    assert backend._open == 0
+
+    (proc / "4242" / "cmdline").write_text("python3\0grab_frames.py\0")
+    assert mod.usb_holder(str(fake.sysfs)) == "python3 grab_frames.py (PID 4242)"
+    (proc / "4242" / "fd" / "9").unlink()  # another user's process: only usbfs is visible
+    assert mod.usb_holder(str(fake.sysfs)) == "another program"
+    (fake.sysfs / f"{d['node'].name}:1.0" / "driver").unlink()  # free: some other failure
+    assert mod.usb_holder(str(fake.sysfs)) == ""

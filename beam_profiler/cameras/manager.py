@@ -200,7 +200,11 @@ class CameraManager:
         return self._executor.submit(entry.backend.open, entry.info, self.mode)
 
     def open_sync(self, uid: str) -> Camera:
-        return self.open_async(uid).result()
+        """Open on the calling thread, not queued behind the worker: start-up
+        opens the simulator this way while a slow camera is still opening."""
+        entry = self._entries[uid]
+        self.set_state(uid, "connecting")
+        return entry.backend.open(entry.info, self.mode)
 
     def set_active(self, uid: str, camera: Camera):
         with self._lock:

@@ -1,7 +1,7 @@
 """Camera backends and discovery.
 
 `BACKENDS` lists every supported family in priority order.  Each is imported
-lazily, so a missing SDK (no pypylon, no harvesters) only disables that one
+lazily, so a missing SDK (no pypylon, harvesters or tucsen) only disables that one
 backend - it is still listed, with the reason, in the Cameras window and in
 `--list-cameras`.
 
@@ -33,7 +33,7 @@ __all__ = [
 
 # Order is priority: a camera reachable through two backends (a Basler is also
 # a GenICam camera) is opened by the first.
-BACKENDS = ("basler", "genicam", "uvc", "sim")
+BACKENDS = ("basler", "genicam", "tucsen", "uvc", "sim")
 
 
 def _backend_class(name: str):
@@ -47,6 +47,10 @@ def _backend_class(name: str):
         from . import genicam
 
         return genicam.GenICamBackend
+    if name == "tucsen":
+        from . import tucsen
+
+        return tucsen.TucsenBackend
     if name == "uvc":
         from . import uvc
 
@@ -72,6 +76,10 @@ class UnavailableBackend(Backend):
 _TITLES = {
     "basler": ("Basler (pylon)", "install the pylon SDK and `pip install pypylon`"),
     "genicam": ("GenICam (harvesters)", "`pip install harvesters`, plus your vendor's SDK"),
+    "tucsen": (
+        "Tucsen (TUCam)",
+        "install libTUCam and `pip install <tucsen-camera-driver>/python` (docs/cameras.md)",
+    ),
 }
 
 

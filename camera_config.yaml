@@ -39,6 +39,14 @@ cameras:
   acA4024-29um:
     pixel_size: 1.85e-6   # Sony IMX226, 4024 x 3036
 
+  # --- Tucsen (TUCam SDK; see docs/cameras.md) ------------------------------
+  # Gain is the gain mode: 0 HDR (the widest range), 1 High gain, 2 Low gain,
+  # 3-5 the same without the SDK's image corrections.  No I/O lines are driven.
+  "Dhyana 4040 V2":
+    pixel_size: 9.0e-6    # Gpixel GSENSE4040, 4096 x 4096 (Tucsen manual)
+    exposure_line: null
+    user_output_line: null
+
   # --- the simulated camera (python -m beam_profiler --sim) -----------------
   # Matches Simulated-4x4, Simulated-8x8, ... so the file can be exercised
   # without hardware.  It has no I/O lines to drive.

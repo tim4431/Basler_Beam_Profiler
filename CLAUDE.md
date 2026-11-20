@@ -16,7 +16,10 @@ setup.sh detects them and offers to install. Without tkinter the app still runs
 (settings window and save dialog log a warning instead).
 
 For Basler cameras the pylon SDK must be installed system-wide; other GenICam
-cameras need `pip install harvesters` plus the vendor SDK (GenTL producer), USB
+cameras need `pip install harvesters` plus the vendor SDK (GenTL producer),
+Tucsen cameras need libTUCam plus the `tucsen` package from a
+tucsen-camera-driver checkout (`./setup.sh --tucsen=<checkout>`; on the lab PC
+it is `~/Code/Tucsen camera/SamplePro_General_V1.0.34.0_ubuntu22.04`), USB
 webcams need nothing. Any enumerated camera opens whether or not it is in
 `camera_config.yaml`; the entry (keyed by exact model name, a glob, or a serial
 under `serials:`) only supplies `pixel_size` and any model quirks —
@@ -62,12 +65,16 @@ compatibility shim for run.sh/PyInstaller.
   devices) and `Camera` (grab_image, ROI, ExposureTime, Gain properties, plus
   shared PID auto-exposure and `apply_settings`). Backends: `basler.py`
   (pypylon), `genicam.py` (harvesters, any GenTL producer; untested on real
-  non-Basler hardware), `uvc.py` (OpenCV webcams), `simulated.py`; registered
+  non-Basler hardware), `tucsen.py` (Tucsen TUCam SDK through the `tucsen`
+  package; Linux, USB 3.0 or CameraLink), `uvc.py` (OpenCV webcams),
+  `simulated.py`; registered
   in `cameras/__init__.BACKENDS`, imported lazily so a missing SDK disables
   only that backend. `manager.CameraManager` scans every backend on a
   background thread and turns the diff into added/removed/returned events;
   `session.CameraSession` decides what the viewer shows: opens on a worker
   thread, goes offline on disconnect, reopens and restores state on return.
+  At start-up it waits `STARTUP_WAIT_S` (2 s) for the first camera, then opens
+  the window on the simulator while a slower one (a Tucsen, ~7 s) finishes.
   Anything testable without hardware must not import pypylon at module level.
 - `cameraconfig.py` — the same idea as `fitconfig.py` for everything that
   differs between camera models: pixel size, exposure limits, pixel formats,
@@ -207,8 +214,15 @@ compatibility shim for run.sh/PyInstaller.
   Non-ASCII characters (µ, σ, ×) are substituted when the font lacks them.
 - **Nothing a camera does may end the loop.** `Viewer.run` catches per-frame
   exceptions (logged once per 10 s, shown as a toast); only Esc/close quits.
-  Basler timeouts are not disconnects — `IsCameraDeviceRemoved()` decides;
-  other backends give up after `MAX_CONSECUTIVE_FAILURES` failed grabs.
+  Basler timeouts are not disconnects — `IsCameraDeviceRemoved()` decides; for
+  a Tucsen on USB, sysfs does; other backends (and Tucsen over CameraLink) give
+  up after `MAX_CONSECUTIVE_FAILURES` failed grabs.
+- **The TUCam SDK is scanned only when something changed.** Its `Api_Init`
+  takes ~1 s, prints a screenful to stdout and must not run while a Tucsen is
+  open, so `tucsen.py` asks it at start-up, on Rescan, after a failed open and
+  when the Tucsen devices in `/sys/bus/usb/devices` change - never on the
+  2-second timer by itself. Serials are unreadable before the ~5 s open, so
+  Tucsen uids are SDK indices (`tucsen:0`).
 - `cameraconfig.save_entry` patches camera_config.yaml as text and refuses to
   write unless the parsed result equals the old file plus exactly the change.
   Keep that check; the file is hand-edited and its comments matter.
