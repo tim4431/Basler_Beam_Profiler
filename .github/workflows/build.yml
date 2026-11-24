@@ -24,7 +24,25 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install pyinstaller
+        pip install "pyinstaller>=6.9"  # PYINSTALLER_RESET_ENVIRONMENT (updater.relaunch)
+
+    - name: Generate release tag
+      id: tag
+      run: |
+        $date = Get-Date -Format "yyyy.MM.dd.HHmm"
+        $tag = "v$date"
+        echo "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
+        echo "release_tag=$tag" >> $env:GITHUB_OUTPUT
+      shell: pwsh
+
+    # The exe compares this with the latest release to update itself
+    # (beam_profiler/updater.py); without it, it never updates.
+    - name: Stamp the release into the build
+      shell: bash
+      run: |
+        printf 'RELEASE = "%s"\nCOMMIT = "%s"\n' \
+          "${{ steps.tag.outputs.release_tag }}" "$GITHUB_SHA" > beam_profiler/_build.py
+        cat beam_profiler/_build.py
 
     - name: Build executable with PyInstaller
       run: |
@@ -36,16 +54,6 @@ jobs:
         name: pylon_camera-executable
         path: dist/pylon_camera.exe
         retention-days: 30
-
-    - name: Generate release tag
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-      id: tag
-      run: |
-        $date = Get-Date -Format "yyyy.MM.dd.HHmm"
-        $tag = "v$date"
-        echo "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
-        echo "release_tag=$tag" >> $env:GITHUB_OUTPUT
-      shell: pwsh
 
     - name: Create Release
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'

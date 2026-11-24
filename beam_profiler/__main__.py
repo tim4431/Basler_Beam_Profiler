@@ -60,6 +60,16 @@ def main(argv=None):
         help="interface zoom for this session, e.g. 1.5 (0.5-2.5; default: the last "
              "one used, saved in ui_config.json; +/- and 0 change it while running)",
     )
+    parser.add_argument(
+        "--no-update", action="store_true",
+        help="do not update this session (a git checkout fast-forwards to its "
+             "upstream at start-up, a release exe downloads the latest release; "
+             'off for good with "auto_update": false in ui_config.json)',
+    )
+    parser.add_argument(
+        "--update", action="store_true",
+        help="check for an update now, install it, then exit",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -69,9 +79,17 @@ def main(argv=None):
         handlers=[logging.StreamHandler(sys.stdout)],
     )
 
+    from . import updater
+
+    if args.update:
+        return updater.update_now(cli_off=args.no_update)
     backends = [b.strip() for b in args.backends.split(",")] if args.backends else None
     if args.list_cameras or args.write_camera_config:
         return list_cameras(write=args.write_camera_config, backends=backends)
+
+    # Before the rest of the package is imported: an update fetched by the last
+    # session is installed here, and the process re-executes into it.
+    updater.apply_at_startup(cli_off=args.no_update)
 
     from .cameras import CameraManager, load_backends
 
@@ -101,7 +119,15 @@ def main(argv=None):
 
     from .ui import Viewer
 
-    Viewer(manager, prefer=args.camera, simulate=args.sim).run()
+    viewer = Viewer(manager, prefer=args.camera, simulate=args.sim)
+    updated = updater.just_updated()
+    if updated:
+        logging.info(updated)
+        viewer._notify(updated)
+    updater.start(viewer._notify)
+    viewer.run()
+    if viewer.restart_requested:  # U: into the update downloaded meanwhile
+        updater.restart()
 
 
 def list_cameras(write: bool = False, backends: list[str] | None = None) -> int:

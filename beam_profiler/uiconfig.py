@@ -1,5 +1,6 @@
-"""Interface settings that are not about the fit: the UI zoom and the last
-live-view window size, persisted to ui_config.json next to the app.
+"""Interface settings that are not about the fit: the UI zoom, the last
+live-view window size and whether the app updates itself (`updater`),
+persisted to ui_config.json next to the app.
 
 The same pattern as `fitconfig`: an immutable config swapped in atomically,
 listeners told about every change (from whichever thread made it - a Tk
@@ -31,6 +32,7 @@ MIN_WINDOW, MAX_WINDOW = 200, 16384
 class UIConfig:
     scale: float = 1.0
     window: tuple[int, int] | None = None  # live-view image size (w, h) at last exit
+    auto_update: bool = True  # see updater.py; edit the file while the app is closed
 
 
 def clamp_scale(value) -> float:
@@ -142,6 +144,12 @@ def load_config(path: str | None = None) -> UIConfig:
         if window is None:
             logging.warning(f"{path}: ignoring window {data['window']!r}")
         cfg = replace(cfg, window=window)
+    if "auto_update" in data:
+        if isinstance(data["auto_update"], bool):
+            cfg = replace(cfg, auto_update=data["auto_update"])
+        else:
+            logging.warning(f"{path}: ignoring auto_update {data['auto_update']!r} "
+                            "(true or false)")
     return cfg
 
 
@@ -150,7 +158,8 @@ def save_config(cfg: UIConfig, path: str | None = None):
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"scale": cfg.scale,
-                       "window": list(cfg.window) if cfg.window else None}, f, indent=4)
+                       "window": list(cfg.window) if cfg.window else None,
+                       "auto_update": cfg.auto_update}, f, indent=4)
     except Exception as e:
         logging.error(f"could not write {path}: {e}")
 

@@ -387,7 +387,7 @@ def test_ui_config_round_trips_and_overrides_are_not_saved(tmp_path):
         assert uiconfig.scale() == 2.0
         uiconfig.set_window((1300, 700))  # saves the file, with the saved scale
         saved = json.loads(open(uiconfig.CONFIG_PATH).read())
-        assert saved == {"scale": 1.5, "window": [1300, 700]}
+        assert saved == {"scale": 1.5, "window": [1300, 700], "auto_update": True}
         assert [c.scale for c in seen] == [1.5, 2.0]
         uiconfig.set_scale(2.0, save=False)
         assert len(seen) == 2  # no change, no notification
@@ -402,6 +402,8 @@ def test_ui_config_round_trips_and_overrides_are_not_saved(tmp_path):
     ('{"scale": 9, "window": [5, 5]}', uiconfig.UIConfig(2.5, None)),
     ('{"scale": 0.73, "window": "wide"}', uiconfig.UIConfig(0.7, None)),
     ('{"scale": NaN}', uiconfig.UIConfig()),
+    ('{"auto_update": false}', uiconfig.UIConfig(auto_update=False)),
+    ('{"auto_update": "no", "scale": 1.2}', uiconfig.UIConfig(1.2)),  # not a bool: on
 ])
 def test_a_bad_ui_config_falls_back_field_by_field(tmp_path, text, expect):
     path = tmp_path / "ui.json"
@@ -713,3 +715,36 @@ def test_live_window_is_harmless_without_x11(monkeypatch):
     live = desktop.LiveWindow("Beam Profiler")
     assert live.attach() is True and live.poll() == [] and not live.wheel_grabbed
     live.close()
+
+
+def test_u_restarts_into_a_ready_update_else_checks_for_one(viewer, monkeypatch):
+    from beam_profiler import updater
+
+    v = viewer
+    checks = []
+    monkeypatch.setattr(updater, "check_now", lambda: checks.append(1))
+    monkeypatch.setattr(updater, "_status", updater.Status("unsupported", detail="by hand"))
+    v._handle_key(ord("u"))
+    assert not v.restart_requested and v.toasts[-1][2] == "warn" and not checks
+
+    monkeypatch.setattr(updater, "_status", updater.Status("current", "git", "abc1234"))
+    v._handle_key(ord("u"))
+    assert checks == [1] and "Checking" in v.toasts[-1][1]
+
+    monkeypatch.setattr(updater, "_status", updater.Status(
+        "ready", "git", "abc1234", "def5678", "2 new commits on origin/main"))
+    assert v._hud().update == "Update ready · U"
+    _frames(v, 1)  # the chip draws
+    assert status_update(v)["state"] == "ready"
+    monkeypatch.setattr(updater, "others_running", lambda: [4242])
+    v._handle_key(ord("u"))
+    assert not v.restart_requested and "4242" in v.toasts[-1][1]
+    monkeypatch.setattr(updater, "others_running", lambda: [])
+    v._handle_key(ord("u"))
+    assert v.restart_requested  # run() stops; main() relaunches
+
+
+def status_update(v):
+    from beam_profiler.status import viewer_status
+
+    return viewer_status(v)["update"]

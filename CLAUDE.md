@@ -54,7 +54,9 @@ python -m beam_profiler                              # run (hardware, sim fallba
 
 Work happens on the `dev` branch. CI (`.github/workflows/build.yml`) runs only
 on push to `main` and every main push builds a Windows exe **and publishes a
-GitHub release** — don't merge to main casually.
+GitHub release** — don't merge to main casually: every release exe and every
+checkout on `main` installs it by itself (`updater.py`), and a checkout on
+`dev` installs every push to `dev`.
 
 ## Architecture
 
@@ -93,6 +95,14 @@ compatibility shim for run.sh/PyInstaller.
   `spots.py` (`SpotArray`, the columnar result container), `grid.py`
   (row/column classification), `stats.py` (rectangle pixel stats — the single
   source used by both UI and HTTP server).
+- `updater.py` — self-update. A git checkout fetches its branch's upstream on
+  a background thread and fast-forwards at the *next* start
+  (`apply_at_startup`, called in `main()` before the rest of the package is
+  imported, then `relaunch` re-execs); the Windows exe compares the release
+  tag CI stamps into `_build.py` (gitignored) with the latest GitHub release,
+  downloads a newer one as `<exe>.<tag>.new` and renames it into place at the
+  next start. U restarts into a ready update (`Viewer.restart_requested` →
+  `updater.restart`).
 - `ui/viewer.py` — main loop (`step()`: service camera events → grab →
   process → draw, then keys); owns all mutable state, which `server.py` (Flask,
   daemon thread) and `status.py` read. `ui/overlays.py` draws the status bar,
@@ -226,6 +236,12 @@ compatibility shim for run.sh/PyInstaller.
 - `cameraconfig.save_entry` patches camera_config.yaml as text and refuses to
   write unless the parsed result equals the old file plus exactly the change.
   Keep that check; the file is hand-edited and its comments matter.
+- **The updater never changes files under a running copy.** A one-file exe
+  reads every lazy import from its own file by path, and a checkout imports
+  `server` and the Tk windows on demand, so a swap or merge under a running
+  process breaks it later. Both happen only at start-up and only when
+  `others_running()` (locks on `data/.instances/<pid>`) is empty; never over
+  local changes or unpushed commits; a pip failure rolls the merge back.
 - CV changes must keep `tests/` passing — they check detection count,
   sub-pixel position error, widths, orientation and grid classification
   against synthetic ground truth.

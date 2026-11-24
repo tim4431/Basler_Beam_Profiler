@@ -103,6 +103,7 @@ class Hud:
     web: bool
     web_port: int
     sync: bool
+    update: str | None  # chip text while an update waits for a restart
     roi: tuple
     mouse: tuple
     rect: tuple | None
@@ -197,6 +198,8 @@ def draw_top_bar(img, hud: Hud, m: Metrics | None = None):
     if not hud.scale_known:
         extras.append(_chip(m, "pixel size unset: µm = px", "warning", OV.WARN_TEXT, OV.WARN,
                             0.16))
+    if hud.update:
+        extras.append(_chip(m, hud.update, "refresh", OV.ACCENT_HI, OV.ACCENT, 0.18))
     fb, fs = m.font(14, True), m.font(12)
     room = right_limit - x - sum(c.w + m.gap for c in extras) - m.px(10) - fs.width(hud.source)
     label = gfx.ellipsize(hud.camera, fb, max(room, m.px(60)))
@@ -644,6 +647,7 @@ def help_sections(port: int):
                 (("+", "−"), "Interface zoom in / out"),
                 (("0",), "Interface zoom 100%"),
                 (("I",), "Info panel"),
+                (("U",), "Update: check now / restart into it"),
                 (("?",), "This help"),
                 (("Esc",), "Close the help, else quit"),
             )),

@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 
+from . import updater
 from .config import STATUS_JSON_PATH
 
 
@@ -32,6 +33,9 @@ def viewer_status(viewer) -> dict:
         "fitting_enabled": viewer.do_fitting,
         "rect_sensor": viewer.rect_sensor,
         "fit_rect_sensor": viewer.fit_rect_sensor,
+        # this copy's version and whether a newer one is installed for the next
+        # start - see updater.Status
+        "update": updater.status().to_dict(),
     }
 
 

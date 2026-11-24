@@ -75,9 +75,23 @@ curl -X POST -H "Content-Type: application/json" \
   "auto_exposure": false,
   "fitting_enabled": false,
   "rect_sensor": [2476, 1740, 2837, 2099],
-  "fit_rect_sensor": null
+  "fit_rect_sensor": null,
+  "update": {
+    "state": "ready",
+    "kind": "git",
+    "current": "8f074f3",
+    "latest": "a1b2c3d",
+    "detail": "2 new commits on origin/main"
+  }
 }
 ```
+
+`update` is the auto-updater (see the README, *Updates*): `kind` is `git`
+(a checkout) or `exe` (a release build), `current` the running commit or
+release tag, and `state` one of `ready` (`latest` is installed and runs from
+the next start), `current`, `checking`, `idle` (not checked yet), `blocked`
+(a checkout with local changes or commits; `detail` says which), `error`,
+`off` or `unsupported`.
 
 `/api/rect_stats` responds with:
 

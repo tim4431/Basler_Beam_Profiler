@@ -30,7 +30,7 @@ from ..config import (
     WEB_SERVER_PORT,
     WINDOW_SIZE,
 )
-from .. import fitconfig, uiconfig
+from .. import fitconfig, uiconfig, updater
 from ..processing import SpotArray, classify_grid, detect_spots, gpu, region_stats
 from ..roi import ROIModel, ViewTransform
 from ..status import write_status
@@ -86,6 +86,7 @@ KEY_ACTIONS = {
     7340032: "help", 65470: "help",  # F1
     ord("+"): "zoom_in", ord("="): "zoom_in", 65451: "zoom_in",  # keypad + (GTK)
     ord("-"): "zoom_out", 65453: "zoom_out", ord("0"): "zoom_reset",
+    ord("u"): "update",
 }
 TOAST_LIFETIME = 6.0
 TOOLTIP_DELAY = 0.3  # s of hovering before a button explains itself
@@ -189,6 +190,7 @@ class Viewer:
         self._mouse_xy = None  # last pointer position, display coords
         self.show_info = True
         self.show_help = False
+        self.restart_requested = False  # U with an update ready: main() relaunches
         self._camera_state = None
         self._last_disp = None
         self._error_log: dict[str, float] = {}
@@ -346,7 +348,7 @@ class Viewer:
                     disp = np.zeros((self.canvas[1], self.canvas[0], 3), np.uint8)
                 self._last_disp = disp
                 cv2.imshow(WINDOW, disp)
-                if not self._handle_key(cv2.waitKeyEx(1)):
+                if not self._handle_key(cv2.waitKeyEx(1)) or self.restart_requested:
                     break
                 if self._live_frames:  # until Qt has created the window
                     self._live_frames -= 1
@@ -595,6 +597,7 @@ class Viewer:
             web=self.web_server_enabled,
             web_port=WEB_SERVER_PORT,
             sync=cam.userdefined_line_enabled,
+            update="Update ready · U" if updater.status().state == "ready" else None,
             roi=cam.ROI,
             mouse=self.last_mouse,
             rect=rect,
@@ -827,6 +830,26 @@ class Viewer:
             uiconfig.zoom(-1)
         elif action == "zoom_reset":
             uiconfig.reset_scale()
+        elif action == "update":
+            self._update()
+
+    def _update(self):
+        """U: restart into an update that is ready, else look for one now."""
+        st = updater.status()
+        others = updater.others_running() if st.state == "ready" else []
+        if others:  # it would come back unchanged: nothing installs under them
+            self._notify(f"Close the other copy of the app first (pid "
+                         f"{', '.join(map(str, others))}), then press U", "warn")
+        elif st.state == "ready":
+            logging.info(f"restarting into the update ({st.latest})")
+            self.restart_requested = True
+        elif st.state in ("off", "unsupported"):
+            self._notify(f"No auto-update: {st.detail}", "warn")
+        elif st.state == "checking":
+            self._notify("Checking for updates...")
+        else:
+            updater.check_now()
+            self._notify("Checking for updates...")
 
     @staticmethod
     def _finish_rect(rect_disp, view: ViewTransform) -> tuple[int, int, int, int]:

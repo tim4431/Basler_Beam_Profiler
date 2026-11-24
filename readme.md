@@ -66,7 +66,8 @@ beam_profiler/
 │                      icons.py (procedural icons), theme.py (shared palette),
 │                      cameras_window.py, settings.py, tkhost.py (shared Tk thread)
 ├── server.py          Flask HTTP API
-└── status.py          pylon_camera.json mirror
+├── status.py          pylon_camera.json mirror
+└── updater.py         self-update: git fast-forward or release exe swap
 ```
 
 Spot detection runs on a ≤1024 px downscale of the frame and refines each spot
@@ -131,6 +132,34 @@ and `beam_profiler/cameraconfig.py` documents every setting inline.
 Until a `pixel_size` is set, the app still runs and warns: the status bar shows
 an amber *pixel size unset: µm = px* chip and `/api/status` reports
 `"pixel_size_known": false`. Everything measured in pixels is unaffected.
+
+### Updates
+
+The app keeps itself up to date from this repository, in the background and
+without interrupting a measurement: a new version is downloaded while it runs
+and installed at the next launch. When one is ready the status bar shows
+*Update ready · U*; press `u` to restart into it right away. Nothing is
+installed while another copy of the app is running from the same folder.
+
+- **Git checkout** (`./run.sh`, the desktop icon, `python -m beam_profiler`):
+  follows the checkout's branch - a machine on `main` gets releases, one on
+  `dev` gets every push to `dev`. It fetches every 6 hours and, at the next
+  start, fast-forwards and re-runs `pip install -r requirements.txt` if that
+  changed (undoing the update if pip fails). It never touches a checkout with
+  local changes to tracked files or commits that are not pushed; the log says
+  so and you pull by hand.
+- **Windows exe** (from Releases): downloads a newer release's
+  `pylon_camera.exe` next to the running one (as
+  `pylon_camera.exe.<tag>.new`), checks its SHA-256, and renames it into place
+  at the next start; the replaced copy is deleted the time after. Only exes
+  built after this feature know their version - update an older one by hand
+  once. The folder must be writable (not `Program Files`).
+
+`python -m beam_profiler --update` (or `pylon_camera.exe --update`) checks and
+installs at once, then exits. To turn updating off: `--no-update` for one
+session, `BEAM_PROFILER_UPDATE=0`, or `"auto_update": false` in
+`ui_config.json` (edit it while the app is closed). `/api/status` reports the
+state under `update`.
 
 ### Using the compiled application
 
@@ -228,6 +257,7 @@ Every toolbar button names its shortcut when hovered, and `?` lists them all.
 - `i`: show/hide the info card (ROI, cursor, rectangles, fit settings)
 - `?` or `F1`: show/hide the card listing every shortcut
 - `+` / `=` and `-`: interface zoom in / out (10 % steps, 50-250 %); `0`: back to 100 %
+- `u`: restart into a downloaded update (the status bar shows *Update ready · U*); with none waiting, check for one now
 
 ## Spot fitting settings
 

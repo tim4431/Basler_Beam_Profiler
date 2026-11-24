@@ -2,6 +2,8 @@ __pycache__/
 build/
 dist/
 *.spec
+# release tag stamped into exe builds by CI (updater.py)
+beam_profiler/_build.py
 # runtime output
 data/
 pylon_camera.json
