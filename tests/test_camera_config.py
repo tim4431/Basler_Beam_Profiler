@@ -5,8 +5,11 @@ per-model settings out of the driver.
 """
 
 import os
+import re
 import textwrap
+from collections import deque
 
+import numpy as np
 import pytest
 import yaml
 
@@ -20,7 +23,7 @@ from beam_profiler.cameraconfig import (
     resolve,
     yaml_stub,
 )
-from beam_profiler.cameras import SimulatedCamera
+from beam_profiler.cameras import Camera, SimulatedCamera
 from beam_profiler.roi import ROIModel
 
 
@@ -343,6 +346,53 @@ def test_auto_exposure_restores_the_hardware_narrowed_window(tmp_path, monkeypat
     assert (cam.min_exposure, cam.max_exposure) == (26, 20000)
 
 
+class LaggedCamera(Camera):
+    """A free-running camera: each frame shows the exposure that was set
+    `lag` grabs earlier, and its maximum is proportional to that exposure."""
+
+    model_name, serial, W, H = "Lagged", "", 8, 8
+    COUNTS_PER_US = 50.0
+
+    def __init__(self, lag: int, exposure: float):
+        self._exposure = exposure
+        self._pipe = deque([exposure] * lag)
+        super().__init__("16Bit", CameraSettings(min_exposure=30, max_exposure=100_000))
+
+    @property
+    def ExposureTime(self):
+        return self._exposure
+
+    @ExposureTime.setter
+    def ExposureTime(self, value):
+        self._exposure = float(value)
+
+    def _grab(self):
+        self._pipe.append(self._exposure)
+        exposed = self._pipe.popleft()
+        return np.full((8, 8), min(65535, self.COUNTS_PER_US * exposed), np.uint16)
+
+
+@pytest.mark.parametrize("start", [100.0, 20_000.0])  # too dark, saturated
+def test_auto_exposure_settles_on_a_free_running_camera(start):
+    """Free-running, a frame can predate the last exposure change: the Tucsen
+    holds one frame back while it reads out the next, so up to two are stale.
+    The loop must still settle with little overshoot - that is what makes
+    `trigger_mode: "off"` safe for it.  Its steps are small enough that
+    acting on a stale frame costs a few percent; past about four frames of
+    lag it overshoots by tens of percent, and from six it oscillates."""
+    cam = LaggedCamera(lag=2, exposure=start)
+    cam.AutoExposureOn()
+    target = 0.8 * cam.saturation / LaggedCamera.COUNTS_PER_US
+    trace = []
+    for _ in range(150):
+        cam.grab_image()
+        trace.append(cam.ExposureTime / target)
+    trace = np.array(trace)
+    overshoot = trace.max() - 1 if start < target else 1 - trace.min()
+    assert overshoot < 0.10
+    assert np.all(np.abs(trace[-50:] - 1) < 0.02)
+
+
 def test_roi_model_reproduces_a_configured_roi():
     model = ROIModel(2000, 1000, (400, 300, 120, 50))
     assert model.tuple == (400, 300, 120, 50)
@@ -376,6 +426,23 @@ def test_list_cameras_reports_and_offers_a_stub(monkeypatch, capsys, tmp_path):
     assert "NOT in camera_config.yaml" in out
     assert "Mono12p" in out  # what the camera reports
     assert "pixel_size" in out  # the block to paste
+
+
+def test_list_cameras_says_when_a_camera_has_no_serial(monkeypatch, capsys, tmp_path):
+    """A Tucsen over CameraLink cannot read its serial: say so, and which
+    interface it came in on, rather than printing an empty 'serial ,'."""
+    from beam_profiler.__main__ import list_cameras
+
+    probe = {"model": "Dhyana 4040 V2", "serial": "", "vendor": "Tucsen",
+             "backend": "tucsen", "bus": "CameraLink", "sensor_size": (4096, 4096)}
+    _fake_probes(monkeypatch, [probe])
+    monkeypatch.setattr(cameraconfig, "config_path", lambda: str(tmp_path / "absent.yaml"))
+    assert list_cameras() == 0
+    out = capsys.readouterr().out
+    assert "Dhyana 4040 V2  (no serial, Tucsen, via tucsen)" in out
+    assert "serial ," not in out
+    assert re.search(r"interface\s+CameraLink", out)
+    assert "NOT in camera_config.yaml" in out
 
 
 def test_list_cameras_nags_until_the_pixel_size_is_filled_in(

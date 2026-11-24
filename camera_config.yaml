@@ -44,6 +44,9 @@ cameras:
   # 3-5 the same without the SDK's image corrections.  No I/O lines are driven.
   "Dhyana 4040 V2":
     pixel_size: 9.0e-6    # Gpixel GSENSE4040, 4096 x 4096 (Tucsen manual)
+    # Free-run: full frames at 16.5 fps over CameraLink and 9.5 over USB,
+    # against 8.5 and 6 under software trigger.
+    trigger_mode: "off"
     exposure_line: null
     user_output_line: null
 

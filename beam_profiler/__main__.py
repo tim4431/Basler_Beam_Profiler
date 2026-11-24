@@ -123,11 +123,13 @@ def list_cameras(write: bool = False, backends: list[str] | None = None) -> int:
     for probe in devices:
         model, serial = probe["model"], probe["serial"]
         via = f", via {probe['backend']}" if probe.get("backend") else ""
-        print(f"\n{model}  (serial {serial}, {probe.get('vendor') or 'unknown vendor'}{via})")
+        ident = f"serial {serial}" if serial else "no serial"
+        print(f"\n{model}  ({ident}, {probe.get('vendor') or 'unknown vendor'}{via})")
         if "error" in probe:
             print(f"  could not open: {probe['error']}")
             continue
         for key, label in (
+            ("bus", "interface"),
             ("sensor_size", "sensor"),
             ("pixel_formats", "pixel formats"),
             ("exposure_range", "exposure range (us)"),
@@ -140,7 +142,7 @@ def list_cameras(write: bool = False, backends: list[str] | None = None) -> int:
                     value = ", ".join(str(v) for v in value) or "none"
                 print(f"  {label:22} {value}")
 
-        known = model in config.cameras or serial in config.serials
+        known = model in config.cameras or bool(serial) and serial in config.serials
         settings = cameraconfig.resolve(model, serial, config, warn=False)
         if not known:
             status = "NOT in camera_config.yaml"

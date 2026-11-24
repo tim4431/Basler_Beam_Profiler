@@ -192,18 +192,29 @@ Notes per type:
     without the SDK's corrections. Every mode gives full-scale 16-bit data.
   - Exposure moves in the SDK's steps (10.32 µs on the Dhyana 4040 V2), and
     ROI offsets and sizes in multiples of 4 (at least 48 px wide).
-  - Software trigger by default, so every frame is exposed after the last
-    change. Full frames then run at about 6 fps over USB instead of 9.5;
-    `trigger_mode: "off"` free-runs. ROIs run at 50+ fps either way.
+  - The shipped `camera_config.yaml` free-runs the Dhyana 4040 V2
+    (`trigger_mode: "off"`): full frames at 9.5 fps over USB and 16.5 over
+    CameraLink. Under software trigger, the default for other models, every
+    frame is exposed after the last change, but full frames drop to 6 and
+    8.5 fps. Free-running, a frame can predate an exposure change by up to
+    two frames; auto-exposure tolerates that (a few percent of overshoot).
+    ROIs run at 50+ fps either way.
   - No I/O lines are driven.
-  - Opening takes about 7 s; at start-up the simulator shows meanwhile.
+  - Opening takes about 7 s over USB and 3-5 s over CameraLink; at start-up
+    the simulator shows meanwhile.
   - Only one program can have the camera. When another one has it (most
     often a second copy of this app, from a second click on the icon), the
     error names it - *in use by another copy of the beam profiler (PID …)* -
     and the camera is picked up by itself within about 20 s of being freed.
   - USB plugging and unplugging is followed. A CameraLink camera that drops
-    out gets one reopen attempt, then needs *Rescan*. Use one interface at a
-    time: with USB plugged in, the camera does not answer on CameraLink.
+    out gets one reopen attempt, then needs *Rescan*.
+  - Use one interface at a time: with USB plugged in, the camera does not
+    answer on CameraLink. To switch to CameraLink, unplug USB (both
+    CameraLink cables stay in, the camera's first port to J1), power-cycle
+    the camera and allow it up to a minute to boot. A running app does not
+    notice the camera coming up on CameraLink: press *Rescan* in the Cameras
+    window (or restart the app). The listing shows it as *no serial*, since
+    the serial cannot be read over CameraLink.
   - The SDK keeps the camera's own settings (fan speed, ...) in
     `~/.config/tucsen/`, shared with other scripts that use the package.
   - It prints its own diagnostic lines (`[OpenPhxCore]...`) whenever it scans
